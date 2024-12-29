@@ -1,7 +1,11 @@
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 const { mat4, vec3 } = glMatrix;
 
-// Define shaders (WGSL)
+import Camera from './Camera.js';
+
+//--------------------------------------------------------------------------------
+// Shaders (WGSL)
+
 const shaderCode = `
 
   @group(0) @binding(0) var<uniform> transformationMatrix: mat4x4<f32>;
@@ -30,6 +34,73 @@ const shaderCode = `
   }
 `;
 
+//--------------------------------------------------------------------------------
+// Camera controls
+
+const camera = new Camera();
+let isDragging = false;
+let lastMouseX = 0;
+let lastMouseY = 0;
+
+function onMouseDown(event) {
+  isDragging = true;
+  lastMouseX = event.clientX;
+  lastMouseY = event.clientY;
+}
+
+function onMouseUp() {
+  isDragging = false;
+}
+
+function onMouseMove(event) {
+  if (!isDragging) return;
+
+  const deltaX = event.clientX - lastMouseX;
+  const deltaY = event.clientY - lastMouseY;
+  lastMouseX = event.clientX;
+  lastMouseY = event.clientY;
+
+  if (event.shiftKey) {
+    camera.pan(deltaX, deltaY);
+  } else {
+    camera.tumble(-deltaX, -deltaY);
+  }
+}
+
+function onMouseWheel(event) {
+  const delta = -Math.sign(event.deltaY);
+  camera.zoom(0, delta * 10);
+}
+
+function createTransformationMatrix(rotation, camera) {
+  // Create an identity matrix
+  const transformationMatrix = mat4.create();
+
+  // Step 1: Apply 90-degree rotation around the X-axis
+  const xRotationMatrix = mat4.create();
+  mat4.rotateX(xRotationMatrix, xRotationMatrix, Math.PI / 2); // 90 degrees in radians
+  mat4.multiply(transformationMatrix, transformationMatrix, xRotationMatrix);
+
+  // Step 2: Apply the dynamic rotation around the Z-axis
+  const zRotationMatrix = mat4.create();
+  mat4.rotateZ(zRotationMatrix, zRotationMatrix, rotation);
+  mat4.multiply(transformationMatrix, transformationMatrix, zRotationMatrix);
+
+  // Step 3: Multiply by the camera's view matrix
+  const viewMatrix = camera.getViewMatrix();
+  mat4.multiply(transformationMatrix, viewMatrix, transformationMatrix);
+
+  // Step 4: Multiply by the camera's projection matrix
+  const projectionMatrix = camera.getProjectionMatrix();
+  mat4.multiply(transformationMatrix, projectionMatrix, transformationMatrix);
+
+  // Return the final transformation matrix as a Float32Array
+  return transformationMatrix;
+}
+
+//--------------------------------------------------------------------------------
+// glTF loading
+
 async function loadGLTF(url) {
   return new Promise((resolve, reject) => {
     const loader = new GLTFLoader();
@@ -52,58 +123,64 @@ async function loadGLTF(url) {
   });
 }
 
-function createTransformationMatrix(rotation) {
-  // Create an identity matrix
-  const transformationMatrix = mat4.create();
+//--------------------------------------------------------------------------------
+// Initialization
 
-  // Step 1: Apply 90-degree rotation around the X-axis
-  const xRotationMatrix = mat4.create();
-  mat4.rotateX(xRotationMatrix, xRotationMatrix, Math.PI / 2); // 90 degrees in radians
-  mat4.multiply(transformationMatrix, transformationMatrix, xRotationMatrix);
-
-  // Step 2: Apply the dynamic rotation around the Z-axis
-  const zRotationMatrix = mat4.create();
-  mat4.rotateZ(zRotationMatrix, zRotationMatrix, rotation);
-  mat4.multiply(transformationMatrix, transformationMatrix, zRotationMatrix);
-
-  // Return the final transformation matrix as a Float32Array
-  return transformationMatrix;
-}
-
-async function initWebGPU() {
+async function initApp() {
 
   // Get the canvas and its WebGPU context
   const canvas = document.getElementById('gpuCanvas');
 
+  // Event Listeners for camera controls
+  canvas.addEventListener('mousedown', (event) => onMouseDown(event));
+  canvas.addEventListener('mousemove', (event) => onMouseMove(event));
+  canvas.addEventListener('mouseup', () => onMouseUp());
+  canvas.addEventListener('wheel', (event) => onMouseWheel(event));
+  canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+  canvas.addEventListener('wheel', (event) => event.preventDefault());
+
+
+  camera.init(canvas.width, canvas.height);
+
+  // Adapter
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) {
     console.error('WebGPU adapter not available. Your hardware or browser may not support WebGPU.');
     return;
   }
   
+  // Device
   const device = await adapter.requestDevice();
   if (!device) {
     console.error('Failed to create WebGPU device.');
     return;
   }
 
-  const context = canvas.getContext('webgpu');
-
   // Define the format for rendering
   const format = navigator.gpu.getPreferredCanvasFormat();
+  const context = canvas.getContext('webgpu');
   context.configure({
     device,
     format,
     alphaMode: 'opaque',
   });
 
+  // Create the depth texture
+  const depthTexture = device.createTexture({
+    size: [canvas.width, canvas.height, 1],
+    format: 'depth24plus', // Depth format
+    usage: GPUTextureUsage.RENDER_ATTACHMENT, // Used as a render attachment
+  });
+
+  const depthTextureView = depthTexture.createView(); // Create a view of the depth texture
+
   // Create the shader module
   const shaderModule = device.createShaderModule({ code: shaderCode });
 
+  // Load the glTF model
   const { positions, normals, indices } = await loadGLTF('https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf');
 
-  //console.log('Loaded GLTF data:', positions, normals, indices);
-
+  // Combine positions and normals into a single vertex buffer
   const vertexData = new Float32Array(positions.length + normals.length);
   for (let i = 0, j = 0; i < positions.length; i += 3, j += 6) {
     vertexData[j] = positions[i];     // x
@@ -113,7 +190,6 @@ async function initWebGPU() {
     vertexData[j + 4] = normals[i + 1];   // ny
     vertexData[j + 5] = normals[i + 2];   // nz
   }
-
 
   // Create the vertex buffer
   const vertexBuffer = device.createBuffer({
@@ -184,6 +260,11 @@ async function initWebGPU() {
     primitive: {
       topology: 'triangle-list',
     },
+    depthStencil: {
+      format: 'depth24plus', // Match the depth texture format
+      depthWriteEnabled: true, // Enable depth writes
+      depthCompare: 'less', // Compare depth values: closer fragments win
+    },
     layout: pipelineLayout
   });
 
@@ -214,28 +295,37 @@ async function initWebGPU() {
       clearValue: { r: 0.0, g: 0.2, b: 0.4, a: 1.0 }, // Light blue background
       storeOp: 'store',
     }],
+    depthStencilAttachment: {
+      view: depthTextureView, // Use the depth texture
+      depthLoadOp: 'clear', // Clear depth at the start of the pass
+      depthClearValue: 1.0, // Depth is cleared to the farthest value
+      depthStoreOp: 'store', // Store the depth values after the pass
+    },
   };
 
-  // Rotation for the triangle
+  // Rotation for the model
   let rotationAngle = 0;
   let isRotating = true; // Track whether the rotation is active
 
-  // Toggle rotation state on canvas click
-  canvas.addEventListener('click', () => {
-    isRotating = !isRotating; // Toggle the rotation state
+  // Toggle rotation state on key press
+  window.addEventListener('keydown', (event) => {
+    // Check if the pressed key is 'a'
+    if (event.key === 'a' || event.key === 'A') {
+      isRotating = !isRotating;
+    }
   });
 
   // Rendering loop
   function frame() {
 
-    // Calculate the transformation matrix
+    // Update model rotation
     if (isRotating) {
       rotationAngle += 0.01; // Increment the angle for smooth rotation
-      const transformationMatrix = createTransformationMatrix(rotationAngle);
-
-      // Write the rotation matrix to the uniform buffer
-      device.queue.writeBuffer(uniformBuffer, 0, transformationMatrix);
     }
+
+    // Update uniforms
+    const transformationMatrix = createTransformationMatrix(rotationAngle, camera);
+    device.queue.writeBuffer(uniformBuffer, 0, transformationMatrix);
     
     // Get the current texture from the canvas
     const currentTexture = context.getCurrentTexture();
@@ -247,8 +337,8 @@ async function initWebGPU() {
 
     // Issue drawing commands
     passEncoder.setPipeline(pipeline);
-    passEncoder.setBindGroup(0, bindGroup); // Bind the uniform buffer
-    passEncoder.setVertexBuffer(0, vertexBuffer); // Bind the vertex buffer
+    passEncoder.setBindGroup(0, bindGroup);
+    passEncoder.setVertexBuffer(0, vertexBuffer);
     if (indices) {
       passEncoder.setIndexBuffer(indexBuffer, "uint16");
       passEncoder.drawIndexed(indices.length);
@@ -268,9 +358,9 @@ async function initWebGPU() {
   frame();
 }
 
-// Initialize WebGPU
+// Initialize App
 if (navigator.gpu) {
-  initWebGPU();
+  initApp();
 } else {
   console.error('WebGPU is not supported on this browser.');
 }
