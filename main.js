@@ -1,7 +1,7 @@
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 const { mat4, vec3 } = glMatrix;
 
-import Camera from './Camera.js';
+import Camera from "./Camera.js";
 
 //--------------------------------------------------------------------------------
 // Shaders (WGSL)
@@ -127,48 +127,48 @@ async function loadGLTF(url) {
 // Initialization
 
 async function initApp() {
-
   // Get the canvas and its WebGPU context
-  const canvas = document.getElementById('gpuCanvas');
+  const canvas = document.getElementById("gpuCanvas");
 
   // Event Listeners for camera controls
-  canvas.addEventListener('mousedown', (event) => onMouseDown(event));
-  canvas.addEventListener('mousemove', (event) => onMouseMove(event));
-  canvas.addEventListener('mouseup', () => onMouseUp());
-  canvas.addEventListener('wheel', (event) => onMouseWheel(event));
-  canvas.addEventListener('contextmenu', (event) => event.preventDefault());
-  canvas.addEventListener('wheel', (event) => event.preventDefault());
-
+  canvas.addEventListener("mousedown", (event) => onMouseDown(event));
+  canvas.addEventListener("mousemove", (event) => onMouseMove(event));
+  canvas.addEventListener("mouseup", () => onMouseUp());
+  canvas.addEventListener("wheel", (event) => onMouseWheel(event));
+  canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+  canvas.addEventListener("wheel", (event) => event.preventDefault());
 
   camera.init(canvas.width, canvas.height);
 
   // Adapter
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) {
-    console.error('WebGPU adapter not available. Your hardware or browser may not support WebGPU.');
+    console.error(
+      "WebGPU adapter not available. Your hardware or browser may not support WebGPU."
+    );
     return;
   }
-  
+
   // Device
   const device = await adapter.requestDevice();
   if (!device) {
-    console.error('Failed to create WebGPU device.');
+    console.error("Failed to create WebGPU device.");
     return;
   }
 
   // Define the format for rendering
   const format = navigator.gpu.getPreferredCanvasFormat();
-  const context = canvas.getContext('webgpu');
+  const context = canvas.getContext("webgpu");
   context.configure({
     device,
     format,
-    alphaMode: 'opaque',
+    alphaMode: "opaque",
   });
 
   // Create the depth texture
   const depthTexture = device.createTexture({
     size: [canvas.width, canvas.height, 1],
-    format: 'depth24plus', // Depth format
+    format: "depth24plus", // Depth format
     usage: GPUTextureUsage.RENDER_ATTACHMENT, // Used as a render attachment
   });
 
@@ -178,17 +178,19 @@ async function initApp() {
   const shaderModule = device.createShaderModule({ code: shaderCode });
 
   // Load the glTF model
-  const { positions, normals, indices } = await loadGLTF('https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf');
+  const { positions, normals, indices } = await loadGLTF(
+    "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf"
+  );
 
   // Combine positions and normals into a single vertex buffer
   const vertexData = new Float32Array(positions.length + normals.length);
   for (let i = 0, j = 0; i < positions.length; i += 3, j += 6) {
-    vertexData[j] = positions[i];     // x
+    vertexData[j] = positions[i]; // x
     vertexData[j + 1] = positions[i + 1]; // y
     vertexData[j + 2] = positions[i + 2]; // z
-    vertexData[j + 3] = normals[i];   // nx
-    vertexData[j + 4] = normals[i + 1];   // ny
-    vertexData[j + 5] = normals[i + 2];   // nz
+    vertexData[j + 3] = normals[i]; // nx
+    vertexData[j + 4] = normals[i + 1]; // ny
+    vertexData[j + 5] = normals[i + 2]; // nz
   }
 
   // Create the vertex buffer
@@ -203,12 +205,12 @@ async function initApp() {
 
   // Create the index buffer (if indices are provided)
   const indexBuffer = indices
-  ? device.createBuffer({
-      size: indices.byteLength,
-      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-      mappedAtCreation: true,
-    })
-  : null;
+    ? device.createBuffer({
+        size: indices.byteLength,
+        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+      })
+    : null;
 
   if (indices) {
     new Uint16Array(indexBuffer.getMappedRange()).set(indices);
@@ -221,7 +223,7 @@ async function initApp() {
       {
         binding: 0, // Matches @group(0) @binding(0) in the shader
         visibility: GPUShaderStage.VERTEX, // Accessible in the vertex shader
-        buffer: { type: 'uniform' }, // Specifies it's a uniform buffer
+        buffer: { type: "uniform" }, // Specifies it's a uniform buffer
       },
     ],
   });
@@ -235,37 +237,39 @@ async function initApp() {
   const pipeline = device.createRenderPipeline({
     vertex: {
       module: shaderModule,
-      entryPoint: 'vertexMain',
-      buffers: [{
-        arrayStride: 6 * Float32Array.BYTES_PER_ELEMENT,
-        attributes: [
-          {
-            shaderLocation: 0, // Position: Matches @location(0) in the shader
-            format: 'float32x3', // vec3<f32>
-            offset: 0, // Start at the beginning of each vertex
-          },
-          {
-            shaderLocation: 1, // Normal: Matches @location(1) in the shader
-            format: 'float32x3', // vec3<f32>
-            offset: 3 * Float32Array.BYTES_PER_ELEMENT, // Start after position
-          },
-        ],
-      }],
+      entryPoint: "vertexMain",
+      buffers: [
+        {
+          arrayStride: 6 * Float32Array.BYTES_PER_ELEMENT,
+          attributes: [
+            {
+              shaderLocation: 0, // Position: Matches @location(0) in the shader
+              format: "float32x3", // vec3<f32>
+              offset: 0, // Start at the beginning of each vertex
+            },
+            {
+              shaderLocation: 1, // Normal: Matches @location(1) in the shader
+              format: "float32x3", // vec3<f32>
+              offset: 3 * Float32Array.BYTES_PER_ELEMENT, // Start after position
+            },
+          ],
+        },
+      ],
     },
     fragment: {
       module: shaderModule,
-      entryPoint: 'fragmentMain',
+      entryPoint: "fragmentMain",
       targets: [{ format }],
     },
     primitive: {
-      topology: 'triangle-list',
+      topology: "triangle-list",
     },
     depthStencil: {
-      format: 'depth24plus', // Match the depth texture format
+      format: "depth24plus", // Match the depth texture format
       depthWriteEnabled: true, // Enable depth writes
-      depthCompare: 'less', // Compare depth values: closer fragments win
+      depthCompare: "less", // Compare depth values: closer fragments win
     },
-    layout: pipelineLayout
+    layout: pipelineLayout,
   });
 
   // Create the uniform buffer
@@ -273,7 +277,7 @@ async function initApp() {
     size: 256, // Uniform buffers must be aligned to 256 bytes
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  
+
   // Create a bind group to bind the uniform buffer to the shader
   const bindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
@@ -289,17 +293,19 @@ async function initApp() {
 
   // Create the render pass descriptor
   const renderPassDescriptor = {
-    colorAttachments: [{
-      view: undefined, // Assigned per-frame
-      loadOp: 'clear',
-      clearValue: { r: 0.0, g: 0.2, b: 0.4, a: 1.0 }, // Light blue background
-      storeOp: 'store',
-    }],
+    colorAttachments: [
+      {
+        view: undefined, // Assigned per-frame
+        loadOp: "clear",
+        clearValue: { r: 0.0, g: 0.2, b: 0.4, a: 1.0 }, // Light blue background
+        storeOp: "store",
+      },
+    ],
     depthStencilAttachment: {
       view: depthTextureView, // Use the depth texture
-      depthLoadOp: 'clear', // Clear depth at the start of the pass
+      depthLoadOp: "clear", // Clear depth at the start of the pass
       depthClearValue: 1.0, // Depth is cleared to the farthest value
-      depthStoreOp: 'store', // Store the depth values after the pass
+      depthStoreOp: "store", // Store the depth values after the pass
     },
   };
 
@@ -308,25 +314,27 @@ async function initApp() {
   let isRotating = true; // Track whether the rotation is active
 
   // Toggle rotation state on key press
-  window.addEventListener('keydown', (event) => {
+  window.addEventListener("keydown", (event) => {
     // Check if the pressed key is 'a'
-    if (event.key === 'a' || event.key === 'A') {
+    if (event.key === "a" || event.key === "A") {
       isRotating = !isRotating;
     }
   });
 
   // Rendering loop
   function frame() {
-
     // Update model rotation
     if (isRotating) {
       rotationAngle += 0.01; // Increment the angle for smooth rotation
     }
 
     // Update uniforms
-    const transformationMatrix = createTransformationMatrix(rotationAngle, camera);
+    const transformationMatrix = createTransformationMatrix(
+      rotationAngle,
+      camera
+    );
     device.queue.writeBuffer(uniformBuffer, 0, transformationMatrix);
-    
+
     // Get the current texture from the canvas
     const currentTexture = context.getCurrentTexture();
     renderPassDescriptor.colorAttachments[0].view = currentTexture.createView();
@@ -362,5 +370,5 @@ async function initApp() {
 if (navigator.gpu) {
   initApp();
 } else {
-  console.error('WebGPU is not supported on this browser.');
+  console.error("WebGPU is not supported on this browser.");
 }

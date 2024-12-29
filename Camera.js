@@ -31,41 +31,43 @@ class Camera {
     // Step 1: Rotate around the world Y-axis (up-axis)
     const tmp = vec3.create();
     vec3.sub(tmp, this.m_position, this.m_target); // tmp = m_position - m_target
-  
+
     const degreesX = dx * 0.004; // Horizontal rotation (around Y-axis)
     const rotationY = mat4.create();
     mat4.rotateY(rotationY, mat4.create(), degreesX);
     vec3.transformMat4(tmp, tmp, rotationY); // Rotate the position vector
-  
+
     vec3.add(this.m_position, this.m_target, tmp); // Update m_position
     vec3.sub(this.m_forward, this.m_target, this.m_position); // Update forward vector
     vec3.normalize(this.m_forward, this.m_forward);
-  
+
     // Step 2: Rotate around the camera's local X-axis (right-axis)
     const degreesY = dy * 0.004; // Vertical rotation (around X-axis)
     const upRotationAxis = vec3.clone(this.m_right);
     const tiltMatrix = mat4.create();
     mat4.rotate(tiltMatrix, mat4.create(), degreesY, upRotationAxis);
     vec3.transformMat4(tmp, tmp, tiltMatrix);
-  
+
     vec3.add(this.m_position, this.m_target, tmp); // Update m_position
     vec3.sub(this.m_forward, this.m_target, this.m_position); // Update forward vector
     vec3.normalize(this.m_forward, this.m_forward);
-  
+
     // Step 3: Clamp forward vector to prevent flipping
     const maxVerticalComponent = 0.9995;
-    if (this.m_forward[1] > maxVerticalComponent || this.m_forward[1] < -maxVerticalComponent) {
+    if (
+      this.m_forward[1] > maxVerticalComponent ||
+      this.m_forward[1] < -maxVerticalComponent
+    ) {
       return; // Abort if vertical component exceeds the limit
     }
-  
+
     // Step 4: Update right and up vectors
     vec3.cross(this.m_right, this.m_forward, this.m_baseUp);
     vec3.normalize(this.m_right, this.m_right);
-  
+
     vec3.cross(this.m_up, this.m_right, this.m_forward);
     vec3.normalize(this.m_up, this.m_up);
   }
-  
 
   zoom(dx, dy) {
     const speed = 0.01;
@@ -101,7 +103,13 @@ class Camera {
   getProjectionMatrix() {
     const ratio = this.m_width / this.m_height;
     const projectionMatrix = mat4.create();
-    mat4.perspective(projectionMatrix, Math.PI / 4, ratio, this.m_near, this.m_far); // 45-degree FOV
+    mat4.perspective(
+      projectionMatrix,
+      Math.PI / 4,
+      ratio,
+      this.m_near,
+      this.m_far
+    ); // 45-degree FOV
     return projectionMatrix;
   }
 
