@@ -126,7 +126,7 @@ async function loadGLTF(url) {
 //--------------------------------------------------------------------------------
 // Initialization
 
-async function initApp() {
+async function launchApp() {
   // Get the canvas and its WebGPU context
   const canvas = document.getElementById("gpuCanvas");
 
@@ -138,7 +138,7 @@ async function initApp() {
   canvas.addEventListener("contextmenu", (event) => event.preventDefault());
   canvas.addEventListener("wheel", (event) => event.preventDefault());
 
-  camera.init(canvas.width, canvas.height);
+  camera.resizeViewport(canvas.width, canvas.height);
 
   // Adapter
   const adapter = await navigator.gpu.requestAdapter();
@@ -368,7 +368,7 @@ async function initApp() {
 
 // Initialize App
 if (navigator.gpu) {
-  initApp();
+  launchApp();
 } else {
   console.error("WebGPU is not supported on this browser.");
 }
