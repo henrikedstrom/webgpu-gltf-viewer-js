@@ -4,9 +4,11 @@ export default class Camera {
   // Constants
   static #kTumbleSpeed = 0.004;
   static #kTiltClamp = 0.98; // Prevent gimbal lock.
-  static #kPanSpeed = 0.01;
-  static #kZoomSpeed = 0.01;
+  static #kPanSpeed = 0.02;
+  static #kZoomSpeed = 0.05;
   static #kDefaultFOV = Math.PI / 4; // 45 degrees
+  static #kNearClipFactor = 0.01;
+  static #kFarClipFactor = 100.0;
 
   constructor(width = 800, height = 600) {
     this.m_width = width;
@@ -22,6 +24,10 @@ export default class Camera {
     this.m_right = vec3.fromValues(1.0, 0.0, 0.0);
     this.m_up = vec3.fromValues(0.0, 1.0, 0.0);
     this.m_baseUp = vec3.fromValues(0.0, 1.0, 0.0);
+
+    // Dynamic movement factors (scaled by model size)
+    this.m_panFactor = Camera.#kPanSpeed;
+    this.m_zoomFactor = Camera.#kZoomSpeed;
 
     this.tmpMat4 = mat4.create(); // Preallocated temporary matrix
   }
@@ -68,7 +74,7 @@ export default class Camera {
 
   // Zoom the camera (move along forward vector)
   zoom(dx, dy) {
-    const delta = (-dx + dy) * Camera.#kZoomSpeed;
+    const delta = (-dx + dy) * this.m_zoomFactor;
 
     const forwardDelta = vec3.create();
     vec3.scale(forwardDelta, this.m_forward, delta);
@@ -84,8 +90,8 @@ export default class Camera {
 
   // Pan the camera (move along right and up vectors)
   pan(dx, dy) {
-    const deltaX = -dx * Camera.#kPanSpeed;
-    const deltaY = dy * Camera.#kPanSpeed;
+    const deltaX = -dx * this.m_panFactor;
+    const deltaY = dy * this.m_panFactor;
 
     const rightDelta = vec3.create();
     vec3.scale(rightDelta, this.m_right, deltaX);
@@ -97,6 +103,54 @@ export default class Camera {
     vec3.add(this.m_position, this.m_position, upDelta);
     vec3.add(this.m_target, this.m_target, rightDelta);
     vec3.add(this.m_target, this.m_target, upDelta);
+  }
+
+  // Reset camera to frame a model given its AABB
+  resetToModel(minBounds, maxBounds) {
+    // Validate bounds (any axis where max <= min is invalid)
+    if (
+      maxBounds[0] <= minBounds[0] ||
+      maxBounds[1] <= minBounds[1] ||
+      maxBounds[2] <= minBounds[2]
+    ) {
+      // Default to unit cube centered at origin
+      vec3.set(minBounds, -0.5, -0.5, -0.5);
+      vec3.set(maxBounds, 0.5, 0.5, 0.5);
+      console.warn('Invalid model bounds provided to resetToModel, defaulting to unit cube.');
+    }
+
+    // center = (min + max) * 0.5
+    const center = vec3.create();
+    vec3.add(center, minBounds, maxBounds);
+    vec3.scale(center, center, 0.5);
+
+    // radius = 0.5 * length(max - min)
+    const diag = vec3.create();
+    vec3.sub(diag, maxBounds, minBounds);
+    const radius = 0.5 * vec3.length(diag);
+
+    // distance = radius / sin(FOV/2)
+    const halfFov = Camera.#kDefaultFOV * 0.5;
+    const sinHalf = Math.sin(halfFov);
+    const safeRadius = isFinite(radius) && radius > 1e-6 ? radius : 1.0;
+    const distance = safeRadius / (sinHalf > 1e-6 ? sinHalf : 0.70710678); // fallback denom ~sin(45/2)
+
+    // Position the camera at +Z looking toward -Z
+    vec3.set(this.m_position, center[0], center[1], center[2] + distance);
+    vec3.copy(this.m_target, center);
+
+    // Near / far planes
+    this.m_near = safeRadius * Camera.#kNearClipFactor;
+    this.m_far = distance + safeRadius * Camera.#kFarClipFactor;
+    if (this.m_near < 1e-4) this.m_near = 1e-4;
+    if (this.m_far <= this.m_near + 1.0) this.m_far = this.m_near + 1.0;
+
+    // Movement factors scaled by model size
+    this.m_panFactor = safeRadius * Camera.#kPanSpeed;
+    this.m_zoomFactor = safeRadius * Camera.#kZoomSpeed;
+
+    // Recompute basis
+    this.#updateBasisVectors();
   }
 
   // Get the view matrix

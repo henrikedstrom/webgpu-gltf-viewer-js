@@ -21,7 +21,7 @@ struct MaterialUniforms {
 // Constants
 
 const pi = 3.141592653589793;
-const lightDirection = vec3<f32>(-0.25, -0.25, 1.0); // Hard-coded directional light
+const lightDirection = vec3<f32>(-0.25, -0.8, -1.0); // Hard-coded directional light
 const lightColor = 2.0 * vec3<f32>(1.0, 0.95, 0.8); // Warm white light
 
 //---------------------------------------------------------------------

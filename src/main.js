@@ -48,7 +48,7 @@ function onMouseMove(event) {
   lastMouseY = event.clientY;
 
   if (isPanning) {
-    camera.pan(-deltaX, deltaY);
+    camera.pan(deltaX, deltaY);
   } else if (isDragging) {
     camera.tumble(-deltaX, -deltaY);
   }
@@ -82,6 +82,9 @@ async function launchApp() {
       "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf"
       //"https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf"
     );
+    // After model loads, reset camera to frame it
+    const bounds = model.getBounds();
+    camera.resetToModel(bounds.min, bounds.max);
   } catch (error) {
     console.error("Failed to load model:", error);
     return;
