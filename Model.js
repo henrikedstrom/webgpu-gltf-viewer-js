@@ -1,6 +1,13 @@
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 const { mat4, vec3 } = glMatrix;
 
+// Alpha modes
+export const AlphaMode = {
+  Opaque: 0,
+  Mask: 1,
+  Blend: 2
+};
+
 export default class Model {
   constructor() {
     // Transformation properties
@@ -12,7 +19,7 @@ export default class Model {
     this.m_maxBounds = vec3.create();
     
     // Geometry data
-    this.m_vertices = [];
+    this.m_vertices = []; // Array of vertex objects
     this.m_indices = [];
     this.m_materials = [];
     this.m_textures = [];
@@ -50,8 +57,7 @@ export default class Model {
     
     // Update transformation matrix
     mat4.identity(this.m_transform);
-    mat4.rotateX(this.m_transform, this.m_transform, Math.PI / 2);
-    mat4.rotateZ(this.m_transform, this.m_transform, this.m_rotationAngle);
+    mat4.rotateY(this.m_transform, this.m_transform, -this.m_rotationAngle);
   }
 
   // Reset model orientation
@@ -73,7 +79,46 @@ export default class Model {
   }
 
   getVertices() {
-    return this.m_vertices;
+    // Convert vertex objects to Float32Array for WebGPU (full vertex struct)
+    const floatCount = this.m_vertices.length * 18; // 18 floats per vertex
+    const vertexData = new Float32Array(floatCount);
+    
+    for (let i = 0; i < this.m_vertices.length; i++) {
+      const vertex = this.m_vertices[i];
+      const baseOffset = i * 18;
+      
+      // Position (3 floats): offset 0-2
+      vertexData[baseOffset + 0] = vertex.position[0];
+      vertexData[baseOffset + 1] = vertex.position[1];
+      vertexData[baseOffset + 2] = vertex.position[2];
+      
+      // Normal (3 floats): offset 3-5
+      vertexData[baseOffset + 3] = vertex.normal[0];
+      vertexData[baseOffset + 4] = vertex.normal[1];
+      vertexData[baseOffset + 5] = vertex.normal[2];
+      
+      // Tangent (4 floats): offset 6-9
+      vertexData[baseOffset + 6] = vertex.tangent[0];
+      vertexData[baseOffset + 7] = vertex.tangent[1];
+      vertexData[baseOffset + 8] = vertex.tangent[2];
+      vertexData[baseOffset + 9] = vertex.tangent[3];
+      
+      // TexCoord0 (2 floats): offset 10-11
+      vertexData[baseOffset + 10] = vertex.texCoord0[0];
+      vertexData[baseOffset + 11] = vertex.texCoord0[1];
+      
+      // TexCoord1 (2 floats): offset 12-13
+      vertexData[baseOffset + 12] = vertex.texCoord1[0];
+      vertexData[baseOffset + 13] = vertex.texCoord1[1];
+      
+      // Color (4 floats): offset 14-17
+      vertexData[baseOffset + 14] = vertex.color[0];
+      vertexData[baseOffset + 15] = vertex.color[1];
+      vertexData[baseOffset + 16] = vertex.color[2];
+      vertexData[baseOffset + 17] = vertex.color[3];
+    }
+    
+    return vertexData;
   }
 
   getIndices() {
@@ -86,6 +131,13 @@ export default class Model {
 
   getTextures() {
     return this.m_textures;
+  }
+
+  getTexture(index) {
+    if (index >= 0 && index < this.m_textures.length) {
+      return this.m_textures[index];
+    }
+    return null;
   }
 
   getSubMeshes() {
@@ -101,44 +153,195 @@ export default class Model {
     // Clear existing data
     this.#clearData();
 
-    // Assuming a single mesh for now
-    const geometry = gltf.scene.children[0].geometry;
-    const attributes = geometry.attributes;
-
-    // Extract positions and normals
-    const positions = attributes.position.array;
-    const normals = attributes.normal.array;
-    const indices = geometry.index ? geometry.index.array : null;
-
-    // Convert to our vertex format (interleaved position + normal)
-    this.#createVertexData(positions, normals);
+    // Process the scene with proper transform accumulation
+    this.#processScene(gltf);
     
-    // Store indices
-    if (indices) {
-      this.m_indices = indices;
+    // Process materials from the glTF data
+    this.#processMaterials(gltf);
+    
+    // Process textures from the glTF data
+    this.#processTextures(gltf);
+
+    // Recompute bounds
+    this.#recomputeBounds();
+  }
+
+  // Process the glTF scene recursively
+  #processScene(gltf) {
+    const scene = gltf.scene;
+    const identityMatrix = mat4.create();
+    
+    // Process each root node
+    scene.children.forEach(rootNode => {
+      this.#processNode(rootNode, identityMatrix);
+    });
+  }
+
+  // Process a node recursively, accumulating transforms
+  #processNode(node, parentTransform) {
+    // Compute local transformation matrix
+    const localTransform = mat4.create();
+    mat4.identity(localTransform);
+    
+    // Build transform from Three.js node properties
+    if (node.position) {
+      mat4.translate(localTransform, localTransform, [node.position.x, node.position.y, node.position.z]);
+    }
+    
+    if (node.quaternion) {
+      const rotMat = mat4.create();
+      mat4.fromQuat(rotMat, [node.quaternion.x, node.quaternion.y, node.quaternion.z, node.quaternion.w]);
+      mat4.multiply(localTransform, localTransform, rotMat);
+    }
+    
+    if (node.scale) {
+      mat4.scale(localTransform, localTransform, [node.scale.x, node.scale.y, node.scale.z]);
     }
 
-    // Compute bounds
-    this.#recomputeBounds(positions);
+    // Combine with parent transform: globalTransform = parentTransform * localTransform
+    const globalTransform = mat4.create();
+    mat4.multiply(globalTransform, parentTransform, localTransform);
 
-    // Create a basic submesh (for now, single submesh)
-    this.m_subMeshes.push({
-      firstIndex: 0,
-      indexCount: this.m_indices.length,
-      materialIndex: 0,
-      minBounds: vec3.clone(this.m_minBounds),
-      maxBounds: vec3.clone(this.m_maxBounds)
-    });
+    // If this node has a mesh, process it with the accumulated transform
+    if (node.isMesh) {
+      this.#processMesh(node, globalTransform);
+    }
 
-    // Create a basic material (for now)
-    this.m_materials.push({
+    // Recursively process children with the accumulated transform
+    if (node.children) {
+      node.children.forEach(child => {
+        this.#processNode(child, globalTransform);
+      });
+    }
+  }
+
+  // Process a single mesh with accumulated transform
+  #processMesh(meshObject, transform) {
+    const geometry = meshObject.geometry;
+    
+    if (!geometry || !geometry.attributes.position) {
+      console.warn("Mesh has no position data, skipping");
+      return;
+    }
+
+    const attributes = geometry.attributes;
+    const indices = geometry.index ? geometry.index.array : null;
+
+    // Extract vertex attributes
+    const positions = attributes.position.array;
+    const normals = attributes.normal ? attributes.normal.array : null;
+    const tangents = attributes.tangent ? attributes.tangent.array : null;
+    const texCoord0 = attributes.uv ? attributes.uv.array : null;
+    const texCoord1 = attributes.uv1 ? attributes.uv1.array : null;
+    const colors = attributes.color ? attributes.color.array : null;
+
+    const vertexCount = positions.length / 3;
+    const vertexOffset = this.m_vertices.length;
+
+    // Create submesh
+    const subMesh = {
+      firstIndex: this.m_indices.length,
+      indexCount: 0,
+      materialIndex: 0, // Will be updated when materials are processed
+      minBounds: vec3.fromValues(Infinity, Infinity, Infinity),
+      maxBounds: vec3.fromValues(-Infinity, -Infinity, -Infinity)
+    };
+
+    // Process each vertex
+    for (let i = 0; i < vertexCount; i++) {
+      const posIndex = i * 3;
+      const uvIndex = i * 2;
+      const tangentIndex = i * 4;
+      const colorIndex = i * 4;
+
+      // Transform position by accumulated transform matrix
+      const localPos = vec3.fromValues(positions[posIndex], positions[posIndex + 1], positions[posIndex + 2]);
+      const worldPos = vec3.create();
+      vec3.transformMat4(worldPos, localPos, transform);
+
+      // Update submesh bounds
+      if (worldPos[0] < subMesh.minBounds[0]) subMesh.minBounds[0] = worldPos[0];
+      if (worldPos[0] > subMesh.maxBounds[0]) subMesh.maxBounds[0] = worldPos[0];
+      if (worldPos[1] < subMesh.minBounds[1]) subMesh.minBounds[1] = worldPos[1];
+      if (worldPos[1] > subMesh.maxBounds[1]) subMesh.maxBounds[1] = worldPos[1];
+      if (worldPos[2] < subMesh.minBounds[2]) subMesh.minBounds[2] = worldPos[2];
+      if (worldPos[2] > subMesh.maxBounds[2]) subMesh.maxBounds[2] = worldPos[2];
+
+      // Create vertex object
+      const vertex = {
+        // Position (vec3) - transformed
+        position: [worldPos[0], worldPos[1], worldPos[2]],
+        
+        // Normal (vec3) - TODO: transform properly, for now use as-is
+        normal: normals ? [normals[posIndex], normals[posIndex + 1], normals[posIndex + 2]] : [0, 0, 1],
+        
+        // Tangent (vec4) - TODO: transform properly
+        tangent: tangents ? [tangents[tangentIndex], tangents[tangentIndex + 1], tangents[tangentIndex + 2], tangents[tangentIndex + 3]] : [1, 0, 0, 1],
+        
+        // Texture coordinates
+        texCoord0: texCoord0 ? [texCoord0[uvIndex], texCoord0[uvIndex + 1]] : [0, 0],
+        texCoord1: texCoord1 ? [texCoord1[uvIndex], texCoord1[uvIndex + 1]] : [0, 0],
+        
+        // Color
+        color: colors ? [colors[colorIndex] || 1, colors[colorIndex + 1] || 1, colors[colorIndex + 2] || 1, colors[colorIndex + 3] || 1] : [1, 1, 1, 1]
+      };
+
+      this.m_vertices.push(vertex);
+    }
+
+    // Process indices
+    if (indices) {
+      for (let i = 0; i < indices.length; i++) {
+        this.m_indices.push(vertexOffset + indices[i]);
+      }
+      subMesh.indexCount = indices.length;
+    } else {
+      // Non-indexed mesh: generate sequential indices
+      for (let i = 0; i < vertexCount; i++) {
+        this.m_indices.push(vertexOffset + i);
+      }
+      subMesh.indexCount = vertexCount;
+    }
+
+    this.m_subMeshes.push(subMesh);
+  }
+
+  // Process materials from glTF (simplified for now)
+  #processMaterials(gltf) {
+    this.m_materials = [];
+    
+    // TODO: Extract actual materials from glTF
+    this.m_materials.push(this.#createDefaultMaterial());
+  }
+
+  // Process textures from glTF (simplified for now)  
+  #processTextures(gltf) {
+    this.m_textures = [];
+    
+    // TODO: Extract actual textures from glTF
+  }
+
+  // Get alpha mode from material
+  #getAlphaMode(material) {
+    if (material.transparent) {
+      return AlphaMode.Blend;
+    } else if (material.alphaTest > 0) {
+      return AlphaMode.Mask;
+    } else {
+      return AlphaMode.Opaque;
+    }
+  }
+
+  // Create default material
+  #createDefaultMaterial() {
+    return {
       baseColorFactor: [1.0, 1.0, 1.0, 1.0],
+      emissiveFactor: [0.0, 0.0, 0.0],
       metallicFactor: 1.0,
       roughnessFactor: 1.0,
       normalScale: 1.0,
       occlusionStrength: 1.0,
-      emissiveFactor: [0.0, 0.0, 0.0],
-      alphaMode: 0, // Opaque
+      alphaMode: AlphaMode.Opaque,
       alphaCutoff: 0.5,
       doubleSided: false,
       baseColorTexture: -1,
@@ -146,67 +349,33 @@ export default class Model {
       normalTexture: -1,
       emissiveTexture: -1,
       occlusionTexture: -1
-    });
+    };
   }
 
-  // Private method to create interleaved vertex data
-  #createVertexData(positions, normals) {
-    const vertexCount = positions.length / 3;
-    this.m_vertices = new Float32Array(vertexCount * 6); // 3 position + 3 normal
+  // Recompute bounds from vertex data
+  #recomputeBounds() {
+    vec3.set(this.m_minBounds, Infinity, Infinity, Infinity);
+    vec3.set(this.m_maxBounds, -Infinity, -Infinity, -Infinity);
 
-    for (let i = 0; i < vertexCount; i++) {
-      const posIndex = i * 3;
-      const vertIndex = i * 6;
-
-      // Position
-      this.m_vertices[vertIndex] = positions[posIndex];
-      this.m_vertices[vertIndex + 1] = positions[posIndex + 1];
-      this.m_vertices[vertIndex + 2] = positions[posIndex + 2];
-
-      // Normal
-      this.m_vertices[vertIndex + 3] = normals[posIndex];
-      this.m_vertices[vertIndex + 4] = normals[posIndex + 1];
-      this.m_vertices[vertIndex + 5] = normals[posIndex + 2];
-    }
-  }
-
-  // Private method to compute model bounds
-  #recomputeBounds(positions) {
-    if (positions.length === 0) return;
-
-    // Initialize bounds
-    vec3.set(this.m_minBounds, positions[0], positions[1], positions[2]);
-    vec3.set(this.m_maxBounds, positions[0], positions[1], positions[2]);
-
-    // Find min/max for each axis
-    for (let i = 3; i < positions.length; i += 3) {
-      const x = positions[i];
-      const y = positions[i + 1];
-      const z = positions[i + 2];
-
-      if (x < this.m_minBounds[0]) {
-        this.m_minBounds[0] = x;
-      }
-      if (x > this.m_maxBounds[0]) {
-        this.m_maxBounds[0] = x;
-      }
-      if (y < this.m_minBounds[1]) {
-        this.m_minBounds[1] = y;
-      }
-      if (y > this.m_maxBounds[1]) {
-        this.m_maxBounds[1] = y;
-      }
-      if (z < this.m_minBounds[2]) {
-        this.m_minBounds[2] = z;
-      }
-      if (z > this.m_maxBounds[2]) {
-        this.m_maxBounds[2] = z;
-      }
+    // Calculate bounds from transformed vertices
+    for (const vertex of this.m_vertices) {
+      const pos = vertex.position;
+      
+      if (pos[0] < this.m_minBounds[0]) this.m_minBounds[0] = pos[0];
+      if (pos[0] > this.m_maxBounds[0]) this.m_maxBounds[0] = pos[0];
+      if (pos[1] < this.m_minBounds[1]) this.m_minBounds[1] = pos[1];
+      if (pos[1] > this.m_maxBounds[1]) this.m_maxBounds[1] = pos[1];
+      if (pos[2] < this.m_minBounds[2]) this.m_minBounds[2] = pos[2];
+      if (pos[2] > this.m_maxBounds[2]) this.m_maxBounds[2] = pos[2];
     }
   }
 
   // Private method to clear all data
   #clearData() {
+    mat4.identity(this.m_transform);
+    this.m_rotationAngle = 0.0;
+    vec3.set(this.m_minBounds, Infinity, Infinity, Infinity);
+    vec3.set(this.m_maxBounds, -Infinity, -Infinity, -Infinity);
     this.m_vertices = [];
     this.m_indices = [];
     this.m_materials = [];

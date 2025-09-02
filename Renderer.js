@@ -1,28 +1,37 @@
 const { mat4 } = glMatrix;
 
-// Shaders (WGSL)
+// Shaders (WGSL) - Using structs like C++ version
 const shaderCode = `
   @group(0) @binding(0) var<uniform> transformationMatrix: mat4x4<f32>;
 
+  struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) tangent: vec4<f32>,
+    @location(3) texCoord0: vec2<f32>,
+    @location(4) texCoord1: vec2<f32>,
+    @location(5) color: vec4<f32>
+  };
+
   struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) fragColor: vec3<f32>
+    @location(0) fragColor: vec3<f32>,
+    @location(1) texCoord0: vec2<f32>
   };
 
   @vertex
-  fn vertexMain(
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>
-  ) -> VertexOutput {
+  fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
-    output.position = transformationMatrix * vec4<f32>(position, 1.0);
-    output.fragColor = normal * 0.5 + 0.5; // Normalize normal to [0, 1]
+    output.position = transformationMatrix * vec4<f32>(input.position, 1.0);
+    output.fragColor = input.normal * 0.5 + 0.5; // Normalize normal to [0, 1] for now
+    output.texCoord0 = input.texCoord0; // Pass through texture coordinates
     return output;
   }
 
   @fragment
   fn fragmentMain(
-    @location(0) fragColor: vec3<f32>
+    @location(0) fragColor: vec3<f32>,
+    @location(1) texCoord0: vec2<f32>
   ) -> @location(0) vec4<f32> {
     return vec4<f32>(fragColor, 1.0);
   }
@@ -117,11 +126,10 @@ export default class Renderer {
     passEncoder.setVertexBuffer(0, this.vertexBuffer);
     
     if (this.indices.length > 0) {
-      const indexFormat = this.indices instanceof Uint16Array ? "uint16" : "uint32";
-      passEncoder.setIndexBuffer(this.indexBuffer, indexFormat);
+      passEncoder.setIndexBuffer(this.indexBuffer, "uint32"); // Always 32-bit
       passEncoder.drawIndexed(this.indices.length);
     } else {
-      passEncoder.draw(this.vertexData.length / 6); // 6 = 3 position + 3 normal
+      passEncoder.draw(this.vertexData.length / 18); // 18 = full vertex struct
     }
     
     passEncoder.end();
@@ -206,17 +214,37 @@ export default class Renderer {
         entryPoint: "vertexMain",
         buffers: [
           {
-            arrayStride: 6 * Float32Array.BYTES_PER_ELEMENT,
+            arrayStride: 18 * Float32Array.BYTES_PER_ELEMENT, // Full vertex: 18 floats
             attributes: [
               {
-                shaderLocation: 0,
+                shaderLocation: 0, // Position
                 format: "float32x3",
                 offset: 0,
               },
               {
-                shaderLocation: 1,
+                shaderLocation: 1, // Normal
                 format: "float32x3",
                 offset: 3 * Float32Array.BYTES_PER_ELEMENT,
+              },
+              {
+                shaderLocation: 2, // Tangent
+                format: "float32x4",
+                offset: 6 * Float32Array.BYTES_PER_ELEMENT,
+              },
+              {
+                shaderLocation: 3, // TexCoord0
+                format: "float32x2",
+                offset: 10 * Float32Array.BYTES_PER_ELEMENT,
+              },
+              {
+                shaderLocation: 4, // TexCoord1
+                format: "float32x2",
+                offset: 12 * Float32Array.BYTES_PER_ELEMENT,
+              },
+              {
+                shaderLocation: 5, // Color
+                format: "float32x4",
+                offset: 14 * Float32Array.BYTES_PER_ELEMENT,
               },
             ],
           },
@@ -281,17 +309,18 @@ export default class Renderer {
 
     if (this.indices.length > 0) {
       this.indexBuffer = this.device.createBuffer({
-        size: this.indices.byteLength,
+        size: this.indices.length * 4, // Always use 32-bit (4 bytes per index)
         usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true,
       });
 
-      if (this.indices instanceof Uint16Array) {
-        new Uint16Array(this.indexBuffer.getMappedRange()).set(this.indices);
-      } else {
-        new Uint32Array(this.indexBuffer.getMappedRange()).set(this.indices);
-      }
+      // Convert to 32-bit typed array
+      const typedIndices = new Uint32Array(this.indices);
+      new Uint32Array(this.indexBuffer.getMappedRange()).set(typedIndices);
       this.indexBuffer.unmap();
+      
+      // Store the typed array for format detection in render()
+      this.indices = typedIndices;
     }
   }
 
