@@ -26,7 +26,7 @@ function onMouseDown(event) {
     isPanning = true;
     event.preventDefault(); // Prevent default middle-click behavior
   }
-  
+
   lastMouseX = event.clientX;
   lastMouseY = event.clientY;
 }
@@ -82,7 +82,7 @@ async function launchApp() {
   }
   // Initial size
   resizeCanvas();
-  window.addEventListener('resize', resizeCanvas);
+  window.addEventListener("resize", resizeCanvas);
 
   // Setup input handlers
   canvas.addEventListener("mousedown", onMouseDown);

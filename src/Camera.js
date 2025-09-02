@@ -116,7 +116,9 @@ export default class Camera {
       // Default to unit cube centered at origin
       vec3.set(minBounds, -0.5, -0.5, -0.5);
       vec3.set(maxBounds, 0.5, 0.5, 0.5);
-      console.warn('Invalid model bounds provided to resetToModel, defaulting to unit cube.');
+      console.warn(
+        "Invalid model bounds provided to resetToModel, defaulting to unit cube."
+      );
     }
 
     // center = (min + max) * 0.5

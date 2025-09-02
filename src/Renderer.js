@@ -6,7 +6,7 @@ export default class Renderer {
     this.device = null;
     this.context = null;
     this.format = null;
-    
+
     // Rendering resources
     this.depthTexture = null;
     this.depthTextureView = null;
@@ -17,7 +17,7 @@ export default class Renderer {
     this.defaultTexture = null;
     this.defaultNormalTexture = null;
     this.bindGroup = null;
-    
+
     // Model-specific resources
     this.vertexBuffer = null;
     this.indexBuffer = null;
@@ -25,10 +25,10 @@ export default class Renderer {
     this.vertexData = null;
     this.modelTextures = [];
     this.modelTextureTypes = [];
-    
+
     // Render pass descriptor
     this.renderPassDescriptor = null;
-    
+
     // Canvas dimensions
     this.width = 0;
     this.height = 0;
@@ -41,23 +41,23 @@ export default class Renderer {
 
     // Initialize WebGPU
     await this.#initWebGPU(canvas);
-    
+
     // Create depth buffer
     this.#createDepthTexture();
-    
+
     // Create resources first
     this.#createDefaultTexture();
     this.#createSampler();
-    
+
     // Create rendering pipeline
     await this.#createPipeline();
-    
+
     // Create uniform buffers (after pipeline, so we can create bind groups)
     this.#createUniformBuffers();
-    
+
     // Setup model resources
     await this.updateModel(model);
-    
+
     // Create render pass descriptor
     this.#createRenderPassDescriptor();
   }
@@ -71,13 +71,13 @@ export default class Renderer {
 
     // Create vertex buffer
     this.#createVertexBuffer();
-    
+
     // Create index buffer
     this.#createIndexBuffer();
-    
+
     // Load model textures
     await this.#loadModelTextures(model);
-    
+
     // Recreate bind group with actual textures
     this.#createBindGroup();
   }
@@ -90,11 +90,14 @@ export default class Renderer {
 
     // Get current texture
     const currentTexture = this.context.getCurrentTexture();
-    this.renderPassDescriptor.colorAttachments[0].view = currentTexture.createView();
+    this.renderPassDescriptor.colorAttachments[0].view =
+      currentTexture.createView();
 
     // Create command encoder and render pass
     const commandEncoder = this.device.createCommandEncoder();
-    const passEncoder = commandEncoder.beginRenderPass(this.renderPassDescriptor);
+    const passEncoder = commandEncoder.beginRenderPass(
+      this.renderPassDescriptor
+    );
 
     // Issue drawing commands (per submesh with material)
     passEncoder.setPipeline(this.pipeline);
@@ -118,7 +121,7 @@ export default class Renderer {
       this.#writeMaterialUniform(materials[0] || null);
       passEncoder.draw(this.vertexData.length / 18);
     }
-    
+
     passEncoder.end();
 
     // Submit commands
@@ -128,12 +131,13 @@ export default class Renderer {
   resize(width, height) {
     this.width = width;
     this.height = height;
-    
+
     // Recreate depth texture with new size
     this.#createDepthTexture();
-    
+
     // Update render pass descriptor
-    this.renderPassDescriptor.depthStencilAttachment.view = this.depthTextureView;
+    this.renderPassDescriptor.depthStencilAttachment.view =
+      this.depthTextureView;
   }
 
   // Private methods
@@ -176,16 +180,24 @@ export default class Renderer {
 
   async #createPipeline() {
     // Load shader code from file
-    const shaderCode = await this.#loadShaderFile('./shaders/gltf_pbr.wgsl');
-    
+    const shaderCode = await this.#loadShaderFile("./shaders/gltf_pbr.wgsl");
+
     // Create shader module
     const shaderModule = this.device.createShaderModule({ code: shaderCode });
 
     // Create bind group layout for PBR with multiple textures
     const bindGroupLayout = this.device.createBindGroupLayout({
       entries: [
-        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }, // Global
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }, // Material
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        }, // Global
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        }, // Material
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} }, // Sampler
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} }, // BaseColor
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: {} }, // MetallicRoughness
@@ -279,11 +291,16 @@ export default class Renderer {
 
   #createBindGroup() {
     // Find textures by type, use appropriate defaults
-    const baseColorTexture = this.#findTextureByType('baseColor') || this.defaultTexture;
-    const metallicRoughnessTexture = this.#findTextureByType('metallicRoughness') || this.defaultTexture;
-    const normalTexture = this.#findTextureByType('normal') || this.defaultNormalTexture;
-    const occlusionTexture = this.#findTextureByType('occlusion') || this.defaultTexture;
-    const emissiveTexture = this.#findTextureByType('emissive') || this.defaultTexture;
+    const baseColorTexture =
+      this.#findTextureByType("baseColor") || this.defaultTexture;
+    const metallicRoughnessTexture =
+      this.#findTextureByType("metallicRoughness") || this.defaultTexture;
+    const normalTexture =
+      this.#findTextureByType("normal") || this.defaultNormalTexture;
+    const occlusionTexture =
+      this.#findTextureByType("occlusion") || this.defaultTexture;
+    const emissiveTexture =
+      this.#findTextureByType("emissive") || this.defaultTexture;
 
     this.bindGroup = this.device.createBindGroup({
       layout: this.pipeline.getBindGroupLayout(0),
@@ -300,11 +317,11 @@ export default class Renderer {
           binding: 2, // Sampler
           resource: this.sampler,
         },
-  { binding: 3, resource: baseColorTexture.createView() },
-  { binding: 4, resource: metallicRoughnessTexture.createView() },
-  { binding: 5, resource: normalTexture.createView() },
-  { binding: 6, resource: occlusionTexture.createView() },
-  { binding: 7, resource: emissiveTexture.createView() },
+        { binding: 3, resource: baseColorTexture.createView() },
+        { binding: 4, resource: metallicRoughnessTexture.createView() },
+        { binding: 5, resource: normalTexture.createView() },
+        { binding: 6, resource: occlusionTexture.createView() },
+        { binding: 7, resource: emissiveTexture.createView() },
       ],
     });
   }
@@ -321,16 +338,19 @@ export default class Renderer {
   async #loadModelTextures(model) {
     this.modelTextures = [];
     this.modelTextureTypes = [];
-    
+
     const textures = model.getTextures();
-    
+
     for (const texture of textures) {
       if (texture.image) {
         // Create WebGPU texture from HTML Image
         const webgpuTexture = this.device.createTexture({
           size: [texture.width, texture.height, 1],
-          format: 'rgba8unorm',
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+          format: "rgba8unorm",
+          usage:
+            GPUTextureUsage.TEXTURE_BINDING |
+            GPUTextureUsage.COPY_DST |
+            GPUTextureUsage.RENDER_ATTACHMENT,
         });
 
         // Copy image data to WebGPU texture
@@ -348,11 +368,11 @@ export default class Renderer {
 
   #createSampler() {
     this.sampler = this.device.createSampler({
-      magFilter: 'linear',
-      minFilter: 'linear',
-      mipmapFilter: 'linear',
-      addressModeU: 'repeat',
-      addressModeV: 'repeat',
+      magFilter: "linear",
+      minFilter: "linear",
+      mipmapFilter: "linear",
+      addressModeU: "repeat",
+      addressModeV: "repeat",
     });
   }
 
@@ -360,7 +380,7 @@ export default class Renderer {
     // Create a 1x1 white texture as default for base color
     this.defaultTexture = this.device.createTexture({
       size: [1, 1, 1],
-      format: 'rgba8unorm',
+      format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
 
@@ -376,7 +396,7 @@ export default class Renderer {
     // Create a 1x1 "flat" normal texture (128, 128, 255, 255 = [0, 0, 1] in tangent space)
     this.defaultNormalTexture = this.device.createTexture({
       size: [1, 1, 1],
-      format: 'rgba8unorm',
+      format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
 
@@ -393,44 +413,69 @@ export default class Renderer {
   #updateUniforms(model, camera) {
     // Prepare global uniforms data
     const globalData = new Float32Array(80); // 5 matrices * 16 floats + 4 floats for camera pos
-    
+
     const viewMatrix = camera.getViewMatrix();
     const projectionMatrix = camera.getProjectionMatrix();
     const modelMatrix = model.getTransform();
     // Compute normal matrix: inverse transpose of upper 3x3 of model matrix
     const modelMatrix3x3 = [
-      modelMatrix[0], modelMatrix[1], modelMatrix[2],
-      modelMatrix[4], modelMatrix[5], modelMatrix[6], 
-      modelMatrix[8], modelMatrix[9], modelMatrix[10]
+      modelMatrix[0],
+      modelMatrix[1],
+      modelMatrix[2],
+      modelMatrix[4],
+      modelMatrix[5],
+      modelMatrix[6],
+      modelMatrix[8],
+      modelMatrix[9],
+      modelMatrix[10],
     ];
-    
+
     // Create 3x3 matrix, invert it, then transpose
     const temp3x3 = mat4.create();
-    mat4.set(temp3x3, 
-      modelMatrix3x3[0], modelMatrix3x3[1], modelMatrix3x3[2], 0,
-      modelMatrix3x3[3], modelMatrix3x3[4], modelMatrix3x3[5], 0,
-      modelMatrix3x3[6], modelMatrix3x3[7], modelMatrix3x3[8], 0,
-      0, 0, 0, 1
+    mat4.set(
+      temp3x3,
+      modelMatrix3x3[0],
+      modelMatrix3x3[1],
+      modelMatrix3x3[2],
+      0,
+      modelMatrix3x3[3],
+      modelMatrix3x3[4],
+      modelMatrix3x3[5],
+      0,
+      modelMatrix3x3[6],
+      modelMatrix3x3[7],
+      modelMatrix3x3[8],
+      0,
+      0,
+      0,
+      0,
+      1
     );
-    
+
     const normalMatrix3x3 = mat4.create();
     mat4.transpose(normalMatrix3x3, mat4.invert(normalMatrix3x3, temp3x3));
-    
+
     // Convert back to 4x4 with identity for the 4th row/column
     const normalMatrix = mat4.create();
     mat4.identity(normalMatrix);
-    normalMatrix[0] = normalMatrix3x3[0]; normalMatrix[1] = normalMatrix3x3[1]; normalMatrix[2] = normalMatrix3x3[2];
-    normalMatrix[4] = normalMatrix3x3[4]; normalMatrix[5] = normalMatrix3x3[5]; normalMatrix[6] = normalMatrix3x3[6];
-    normalMatrix[8] = normalMatrix3x3[8]; normalMatrix[9] = normalMatrix3x3[9]; normalMatrix[10] = normalMatrix3x3[10];
+    normalMatrix[0] = normalMatrix3x3[0];
+    normalMatrix[1] = normalMatrix3x3[1];
+    normalMatrix[2] = normalMatrix3x3[2];
+    normalMatrix[4] = normalMatrix3x3[4];
+    normalMatrix[5] = normalMatrix3x3[5];
+    normalMatrix[6] = normalMatrix3x3[6];
+    normalMatrix[8] = normalMatrix3x3[8];
+    normalMatrix[9] = normalMatrix3x3[9];
+    normalMatrix[10] = normalMatrix3x3[10];
     const cameraPos = camera.getWorldPosition();
-    
+
     // Pack matrices (each matrix is 16 floats)
-    globalData.set(viewMatrix, 0);           // offset 0-15
-    globalData.set(projectionMatrix, 16);    // offset 16-31  
-    globalData.set(modelMatrix, 32);         // offset 32-47
-    globalData.set(normalMatrix, 48);        // offset 48-63
+    globalData.set(viewMatrix, 0); // offset 0-15
+    globalData.set(projectionMatrix, 16); // offset 16-31
+    globalData.set(modelMatrix, 32); // offset 32-47
+    globalData.set(normalMatrix, 48); // offset 48-63
     globalData.set([cameraPos[0], cameraPos[1], cameraPos[2], 0], 64); // offset 64-67
-    
+
     this.device.queue.writeBuffer(this.globalUniformBuffer, 0, globalData);
   }
 
@@ -438,7 +483,8 @@ export default class Renderer {
     const data = new Float32Array(16);
     let o = 0;
     if (material) {
-      data.set(material.baseColorFactor, o); o += 4;
+      data.set(material.baseColorFactor, o);
+      o += 4;
       data[o++] = material.emissiveFactor[0];
       data[o++] = material.emissiveFactor[1];
       data[o++] = material.emissiveFactor[2];
@@ -452,12 +498,7 @@ export default class Renderer {
       data[o++] = 0.0;
       data[o++] = 0.0;
     } else {
-      data.set([
-        1,1,1,1,
-        0,0,0,0,
-        1,1,1,1,
-        0.5,0,0,0
-      ]);
+      data.set([1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0.5, 0, 0, 0]);
     }
     this.device.queue.writeBuffer(this.materialUniformBuffer, 0, data.buffer);
   }
@@ -493,7 +534,7 @@ export default class Renderer {
       const typedIndices = new Uint32Array(this.indices);
       new Uint32Array(this.indexBuffer.getMappedRange()).set(typedIndices);
       this.indexBuffer.unmap();
-      
+
       // Store the typed array for format detection in render()
       this.indices = typedIndices;
     }
@@ -518,14 +559,14 @@ export default class Renderer {
     };
   }
 
-
-
   // Load shader file from disk
   async #loadShaderFile(path) {
     try {
       const response = await fetch(path);
       if (!response.ok) {
-        throw new Error(`Failed to load shader: ${response.status} ${response.statusText}`);
+        throw new Error(
+          `Failed to load shader: ${response.status} ${response.statusText}`
+        );
       }
       return await response.text();
     } catch (error) {
