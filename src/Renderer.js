@@ -1,42 +1,5 @@
 const { mat4 } = glMatrix;
 
-// Shaders (WGSL) - Using structs like C++ version
-const shaderCode = `
-  @group(0) @binding(0) var<uniform> transformationMatrix: mat4x4<f32>;
-
-  struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) tangent: vec4<f32>,
-    @location(3) texCoord0: vec2<f32>,
-    @location(4) texCoord1: vec2<f32>,
-    @location(5) color: vec4<f32>
-  };
-
-  struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) fragColor: vec3<f32>,
-    @location(1) texCoord0: vec2<f32>
-  };
-
-  @vertex
-  fn vertexMain(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = transformationMatrix * vec4<f32>(input.position, 1.0);
-    output.fragColor = input.normal * 0.5 + 0.5; // Normalize normal to [0, 1] for now
-    output.texCoord0 = input.texCoord0; // Pass through texture coordinates
-    return output;
-  }
-
-  @fragment
-  fn fragmentMain(
-    @location(0) fragColor: vec3<f32>,
-    @location(1) texCoord0: vec2<f32>
-  ) -> @location(0) vec4<f32> {
-    return vec4<f32>(fragColor, 1.0);
-  }
-`;
-
 export default class Renderer {
   constructor() {
     // WebGPU resources
@@ -77,7 +40,7 @@ export default class Renderer {
     this.#createDepthTexture();
     
     // Create rendering pipeline
-    this.#createPipeline();
+    await this.#createPipeline();
     
     // Create uniform buffer
     this.#createUniformBuffer();
@@ -187,7 +150,10 @@ export default class Renderer {
     this.depthTextureView = this.depthTexture.createView();
   }
 
-  #createPipeline() {
+  async #createPipeline() {
+    // Load shader code from file
+    const shaderCode = await this.#loadShaderFile('./shaders/gltf_pbr.wgsl');
+    
     // Create shader module
     const shaderModule = this.device.createShaderModule({ code: shaderCode });
 
@@ -358,5 +324,19 @@ export default class Renderer {
     mat4.multiply(transformationMatrix, projectionMatrix, transformationMatrix);
 
     return transformationMatrix;
+  }
+
+  // Load shader file from disk
+  async #loadShaderFile(path) {
+    try {
+      const response = await fetch(path);
+      if (!response.ok) {
+        throw new Error(`Failed to load shader: ${response.status} ${response.statusText}`);
+      }
+      return await response.text();
+    } catch (error) {
+      console.error(`Error loading shader file ${path}:`, error);
+      throw error;
+    }
   }
 }
