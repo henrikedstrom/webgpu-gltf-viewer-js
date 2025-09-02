@@ -1,7 +1,7 @@
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 const { mat4, vec3 } = glMatrix;
 
 import Camera from "./Camera.js";
+import Model from "./Model.js";
 
 //--------------------------------------------------------------------------------
 // Shaders (WGSL)
@@ -35,9 +35,10 @@ const shaderCode = `
 `;
 
 //--------------------------------------------------------------------------------
-// Camera controls
+// Global objects
 
 const camera = new Camera();
+const model = new Model();
 let isDragging = false;
 let lastMouseX = 0;
 let lastMouseY = 0;
@@ -72,25 +73,19 @@ function onMouseWheel(event) {
   camera.zoom(0, delta * 10);
 }
 
-function createTransformationMatrix(rotation, camera) {
-  // Create an identity matrix
+function createTransformationMatrix(model, camera) {
+  
+  // Create the final transformation matrix
   const transformationMatrix = mat4.create();
 
-  // Step 1: Apply 90-degree rotation around the X-axis
-  const xRotationMatrix = mat4.create();
-  mat4.rotateX(xRotationMatrix, xRotationMatrix, Math.PI / 2); // 90 degrees in radians
-  mat4.multiply(transformationMatrix, transformationMatrix, xRotationMatrix);
+  // Apply the model transformation
+  mat4.copy(transformationMatrix, model.getTransform());
 
-  // Step 2: Apply the dynamic rotation around the Z-axis
-  const zRotationMatrix = mat4.create();
-  mat4.rotateZ(zRotationMatrix, zRotationMatrix, rotation);
-  mat4.multiply(transformationMatrix, transformationMatrix, zRotationMatrix);
-
-  // Step 3: Multiply by the camera's view matrix
+  // Multiply by the camera's view matrix
   const viewMatrix = camera.getViewMatrix();
   mat4.multiply(transformationMatrix, viewMatrix, transformationMatrix);
 
-  // Step 4: Multiply by the camera's projection matrix
+  // Multiply by the camera's projection matrix
   const projectionMatrix = camera.getProjectionMatrix();
   mat4.multiply(transformationMatrix, projectionMatrix, transformationMatrix);
 
@@ -98,30 +93,6 @@ function createTransformationMatrix(rotation, camera) {
   return transformationMatrix;
 }
 
-//--------------------------------------------------------------------------------
-// glTF loading
-
-async function loadGLTF(url) {
-  return new Promise((resolve, reject) => {
-    const loader = new GLTFLoader();
-    loader.load(
-      url,
-      (gltf) => {
-        const geometry = gltf.scene.children[0].geometry; // Assuming a single mesh
-        const attributes = geometry.attributes;
-
-        // Extract positions, normals, and indices
-        const positions = attributes.position.array;
-        const normals = attributes.normal.array;
-        const indices = geometry.index ? geometry.index.array : null;
-
-        resolve({ positions, normals, indices });
-      },
-      undefined,
-      (error) => reject(error)
-    );
-  });
-}
 
 //--------------------------------------------------------------------------------
 // Initialization
@@ -178,20 +149,18 @@ async function launchApp() {
   const shaderModule = device.createShaderModule({ code: shaderCode });
 
   // Load the glTF model
-  const { positions, normals, indices } = await loadGLTF(
-    "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf"
-  );
-
-  // Combine positions and normals into a single vertex buffer
-  const vertexData = new Float32Array(positions.length + normals.length);
-  for (let i = 0, j = 0; i < positions.length; i += 3, j += 6) {
-    vertexData[j] = positions[i]; // x
-    vertexData[j + 1] = positions[i + 1]; // y
-    vertexData[j + 2] = positions[i + 2]; // z
-    vertexData[j + 3] = normals[i]; // nx
-    vertexData[j + 4] = normals[i + 1]; // ny
-    vertexData[j + 5] = normals[i + 2]; // nz
+  try {
+    await model.load(
+      "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf"
+    );
+  } catch (error) {
+    console.error("Failed to load model:", error);
+    return;
   }
+
+  // Get vertex data from the model
+  const vertexData = model.getVertices();
+  const indices = model.getIndices();
 
   // Create the vertex buffer
   const vertexBuffer = device.createBuffer({
@@ -204,7 +173,7 @@ async function launchApp() {
   vertexBuffer.unmap();
 
   // Create the index buffer (if indices are provided)
-  const indexBuffer = indices
+  const indexBuffer = indices.length > 0
     ? device.createBuffer({
         size: indices.byteLength,
         usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
@@ -212,8 +181,12 @@ async function launchApp() {
       })
     : null;
 
-  if (indices) {
-    new Uint16Array(indexBuffer.getMappedRange()).set(indices);
+  if (indices.length > 0) {
+    if (indices instanceof Uint16Array) {
+      new Uint16Array(indexBuffer.getMappedRange()).set(indices);
+    } else {
+      new Uint32Array(indexBuffer.getMappedRange()).set(indices);
+    }
     indexBuffer.unmap();
   }
 
@@ -309,30 +282,40 @@ async function launchApp() {
     },
   };
 
-  // Rotation for the model
-  let rotationAngle = 0;
-  let isRotating = true; // Track whether the rotation is active
+  // Animation control
+  let isAnimating = true; // Track whether the animation is active
 
-  // Toggle rotation state on key press
+  // Toggle animation state on key press
   window.addEventListener("keydown", (event) => {
     // Check if the pressed key is 'a'
     if (event.key === "a" || event.key === "A") {
-      isRotating = !isRotating;
+      isAnimating = !isAnimating;
     }
   });
 
   // Rendering loop
-  function frame() {
-    // Update model rotation
-    if (isRotating) {
-      rotationAngle += 0.01; // Increment the angle for smooth rotation
+  let lastTime = null;
+  function frame(currentTime = performance.now()) {
+    // Calculate deltaTime safely
+    let deltaTime = 16.67; // Default to 60 FPS
+    if (lastTime !== null) {
+      deltaTime = currentTime - lastTime;
+      // Clamp deltaTime to reasonable bounds
+      if (deltaTime <= 0 || deltaTime > 100) {
+        deltaTime = 16.67;
+      }
+    }
+    lastTime = currentTime;
+
+    // Skip if model not loaded yet
+    if (!model.isLoaded()) {
+      requestAnimationFrame(frame);
+      return;
     }
 
-    // Update uniforms
-    const transformationMatrix = createTransformationMatrix(
-      rotationAngle,
-      camera
-    );
+    // Update the model and uniforms
+    model.update(deltaTime, isAnimating);
+    const transformationMatrix = createTransformationMatrix(model, camera);
     device.queue.writeBuffer(uniformBuffer, 0, transformationMatrix);
 
     // Get the current texture from the canvas
@@ -347,11 +330,11 @@ async function launchApp() {
     passEncoder.setPipeline(pipeline);
     passEncoder.setBindGroup(0, bindGroup);
     passEncoder.setVertexBuffer(0, vertexBuffer);
-    if (indices) {
-      passEncoder.setIndexBuffer(indexBuffer, "uint16");
+    if (indices.length > 0) {
+      passEncoder.setIndexBuffer(indexBuffer, indices instanceof Uint16Array ? "uint16" : "uint32");
       passEncoder.drawIndexed(indices.length);
     } else {
-      passEncoder.draw(positions.length / 3);
+      passEncoder.draw(vertexData.length / 6); // 6 = 3 position + 3 normal
     }
     passEncoder.end();
 
