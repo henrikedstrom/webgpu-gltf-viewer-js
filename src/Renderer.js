@@ -173,36 +173,14 @@ export default class Renderer {
     // Create bind group layout for PBR with multiple textures
     const bindGroupLayout = this.device.createBindGroupLayout({
       entries: [
-        {
-          binding: 0, // GlobalUniforms
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 1, // MaterialUniforms  
-          visibility: GPUShaderStage.FRAGMENT,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 2, // Texture sampler
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: {},
-        },
-        {
-          binding: 3, // Base color texture
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: {},
-        },
-        {
-          binding: 4, // Metallic-roughness texture
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: {},
-        },
-        {
-          binding: 5, // Normal texture
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: {},
-        },
+        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }, // Global
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }, // Material
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} }, // Sampler
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} }, // BaseColor
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: {} }, // MetallicRoughness
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: {} }, // Normal
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: {} }, // Occlusion
+        { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: {} }, // Emissive
       ],
     });
 
@@ -278,7 +256,7 @@ export default class Renderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Material uniforms: vec4 + f32 + f32 + vec2 = 32 bytes, round up to 256
+    // Material uniforms: 4 vec4 = 64 bytes, we allocate 256 for alignment / future params
     this.materialUniformBuffer = this.device.createBuffer({
       size: 256,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -293,6 +271,8 @@ export default class Renderer {
     const baseColorTexture = this.#findTextureByType('baseColor') || this.defaultTexture;
     const metallicRoughnessTexture = this.#findTextureByType('metallicRoughness') || this.defaultTexture;
     const normalTexture = this.#findTextureByType('normal') || this.defaultNormalTexture;
+    const occlusionTexture = this.#findTextureByType('occlusion') || this.defaultTexture;
+    const emissiveTexture = this.#findTextureByType('emissive') || this.defaultTexture;
 
     this.bindGroup = this.device.createBindGroup({
       layout: this.pipeline.getBindGroupLayout(0),
@@ -309,18 +289,11 @@ export default class Renderer {
           binding: 2, // Sampler
           resource: this.sampler,
         },
-        {
-          binding: 3, // Base color texture
-          resource: baseColorTexture.createView(),
-        },
-        {
-          binding: 4, // Metallic-roughness texture
-          resource: metallicRoughnessTexture.createView(),
-        },
-        {
-          binding: 5, // Normal texture
-          resource: normalTexture.createView(),
-        },
+  { binding: 3, resource: baseColorTexture.createView() },
+  { binding: 4, resource: metallicRoughnessTexture.createView() },
+  { binding: 5, resource: normalTexture.createView() },
+  { binding: 6, resource: occlusionTexture.createView() },
+  { binding: 7, resource: emissiveTexture.createView() },
       ],
     });
   }
@@ -453,19 +426,34 @@ export default class Renderer {
     const materials = model.getMaterials();
     const material = materials.length > 0 ? materials[0] : null;
     
-    const materialData = new Float32Array(8); // vec4 + f32 + f32 + f32 + f32 = 8 floats
+    // Layout mirrors MaterialUniforms struct order.
+    // baseColorFactor (vec4) + emissiveFactor (vec3) + alphaMode (f32) + metallic, roughness, normalScale, occlusionStrength, alphaCutoff, padding vec3
+    const materialData = new Float32Array(4 + 4 + 8); // 16 floats (64 bytes)
     if (material) {
-      materialData.set(material.baseColorFactor, 0);     // vec4 at offset 0-3
-      materialData[4] = material.metallicFactor;          // f32 at offset 4
-      materialData[5] = material.roughnessFactor;         // f32 at offset 5
-      materialData[6] = material.normalScale;             // f32 at offset 6
-      materialData[7] = 0.0; // padding
+      let o = 0;
+      materialData.set(material.baseColorFactor, o); o += 4;
+      materialData[o++] = material.emissiveFactor[0];
+      materialData[o++] = material.emissiveFactor[1];
+      materialData[o++] = material.emissiveFactor[2];
+      materialData[o++] = material.alphaMode;
+      materialData[o++] = material.metallicFactor;
+      materialData[o++] = material.roughnessFactor;
+      materialData[o++] = material.normalScale;
+      materialData[o++] = material.occlusionStrength;
+      materialData[o++] = material.alphaCutoff;
+      // padding (vec3)
+      materialData[o++] = 0.0;
+      materialData[o++] = 0.0;
+      materialData[o++] = 0.0;
     } else {
-      materialData.set([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]); // Default material with normalScale=1.0
-      console.log('Using default material uniforms');
+      materialData.set([
+        1,1,1,1,
+        0,0,0,0,
+        1,1,1,1,
+        0.5,0,0,0
+      ]);
     }
-    
-    this.device.queue.writeBuffer(this.materialUniformBuffer, 0, materialData);
+    this.device.queue.writeBuffer(this.materialUniformBuffer, 0, materialData.buffer);
   }
 
   #createVertexBuffer() {

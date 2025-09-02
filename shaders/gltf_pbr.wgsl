@@ -10,11 +10,15 @@ struct GlobalUniforms {
 };
 
 struct MaterialUniforms {
-  baseColorFactor: vec4<f32>,
-  metallicFactor: f32,
-  roughnessFactor: f32,
-  normalScale: f32,
-  padding: f32 // For alignment
+  baseColorFactor    : vec4<f32>, // RGBA
+  emissiveFactor     : vec3<f32>, // RGB emissive factor
+  alphaMode          : f32,       // 0=OPAQUE,1=MASK,2=BLEND
+  metallicFactor     : f32,
+  roughnessFactor    : f32,
+  normalScale        : f32,       // Scale applied to sampled normal perturbation
+  occlusionStrength  : f32,       // Strength of AO map (0..1)
+  alphaCutoff        : f32,       // Used when alphaMode==MASK
+  _pad0              : vec3<f32>  // Padding to maintain 16-byte alignment (unused)
 };
 
 //---------------------------------------------------------------------
@@ -53,6 +57,8 @@ struct VertexOutput {
 @group(0) @binding(3) var baseColorTexture: texture_2d<f32>;
 @group(0) @binding(4) var metallicRoughnessTexture: texture_2d<f32>;
 @group(0) @binding(5) var normalTexture: texture_2d<f32>;
+@group(0) @binding(6) var occlusionTexture: texture_2d<f32>;
+@group(0) @binding(7) var emissiveTexture: texture_2d<f32>;
 
 //---------------------------------------------------------------------
 // Utility Functions
@@ -180,15 +186,26 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Lambertian diffuse
   let diffuse = kD * baseColor.rgb / pi;
   
-  // Simple ambient
-  let ambient = vec3<f32>(0.01) * baseColor.rgb;
+  // Ambient occlusion
+  let aoSample = textureSample(occlusionTexture, textureSampler, input.texCoord0).r;
+  let ao = mix(1.0, aoSample, materialUniforms.occlusionStrength);
+  let ambient = vec3<f32>(0.01) * baseColor.rgb * ao;
+
+  // Emissive
+  let emissiveTex = textureSample(emissiveTexture, textureSampler, input.texCoord0).rgb;
+  let emissive = emissiveTex * materialUniforms.emissiveFactor;
   
+  // Alpha handling (mask discard)
+  let alphaMode = materialUniforms.alphaMode;
+  let alphaCutoff = materialUniforms.alphaCutoff;
+  if (alphaMode == 1.0 && baseColor.a < alphaCutoff) { discard; }
+
   // Combine lighting
-  let finalColor = ambient + (diffuse + specular) * lightColor * NdotL;
+  let finalColor = ambient + (diffuse + specular) * lightColor * NdotL + emissive;
   
   // Simple tone mapping and gamma correction
   var color = finalColor / (finalColor + vec3<f32>(1.0));
   color = pow(color, vec3<f32>(1.0/2.2));
-  
+
   return vec4<f32>(color, baseColor.a);
 }
