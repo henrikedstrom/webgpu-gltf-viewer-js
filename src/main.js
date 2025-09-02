@@ -66,15 +66,30 @@ async function launchApp() {
   // Get canvas
   const canvas = document.getElementById("gpuCanvas");
 
+  // Resize helper to fill window & account for device pixel ratio
+  function resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const displayWidth = Math.floor(window.innerWidth * dpr);
+    const displayHeight = Math.floor(window.innerHeight * dpr);
+    if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
+      camera.resizeViewport(displayWidth, displayHeight);
+      if (renderer && renderer.device) {
+        renderer.resize(displayWidth, displayHeight);
+      }
+    }
+  }
+  // Initial size
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+
   // Setup input handlers
   canvas.addEventListener("mousedown", onMouseDown);
   canvas.addEventListener("mousemove", onMouseMove);
   canvas.addEventListener("mouseup", onMouseUp);
   canvas.addEventListener("wheel", onMouseWheel);
   canvas.addEventListener("contextmenu", (event) => event.preventDefault());
-
-  // Initialize camera
-  camera.resizeViewport(canvas.width, canvas.height);
 
   // Load model
   try {
