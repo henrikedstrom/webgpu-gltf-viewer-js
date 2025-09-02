@@ -243,6 +243,7 @@ export default class Model {
       firstIndex: this.m_indices.length,
       indexCount: 0,
       materialIndex: 0, // Will be updated when materials are processed
+      _threeMaterial: meshObject.material || null,
       minBounds: vec3.fromValues(Infinity, Infinity, Infinity),
       maxBounds: vec3.fromValues(-Infinity, -Infinity, -Infinity)
     };
@@ -309,9 +310,10 @@ export default class Model {
   // Process materials from glTF
   #processMaterials(gltf) {
     this.m_materials = [];
+    this._materialIndexMap = new Map();
     
     // Extract materials from Three.js scene
-    const materialMap = new Map(); // Track unique materials
+    const materialMap = this._materialIndexMap; // Track unique materials
     
     gltf.scene.traverse((object) => {
       if (object.isMesh && object.material) {
@@ -367,6 +369,16 @@ export default class Model {
     if (this.m_materials.length === 0) {
       console.log("No materials found in model, using default");
       this.m_materials.push(this.#createDefaultMaterial());
+    }
+
+    // Assign material indices to submeshes now that materials are collected
+    for (const sm of this.m_subMeshes) {
+      if (sm._threeMaterial && materialMap.has(sm._threeMaterial)) {
+        sm.materialIndex = materialMap.get(sm._threeMaterial);
+      } else {
+        sm.materialIndex = 0; // fallback
+      }
+      delete sm._threeMaterial; // cleanup
     }
   }
 

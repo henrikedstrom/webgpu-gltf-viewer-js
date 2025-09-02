@@ -96,16 +96,27 @@ export default class Renderer {
     const commandEncoder = this.device.createCommandEncoder();
     const passEncoder = commandEncoder.beginRenderPass(this.renderPassDescriptor);
 
-    // Issue drawing commands
+    // Issue drawing commands (per submesh with material)
     passEncoder.setPipeline(this.pipeline);
     passEncoder.setBindGroup(0, this.bindGroup);
     passEncoder.setVertexBuffer(0, this.vertexBuffer);
-    
-    if (this.indices.length > 0) {
-      passEncoder.setIndexBuffer(this.indexBuffer, "uint32"); // Always 32-bit
+
+    const subMeshes = model.getSubMeshes();
+    const materials = model.getMaterials();
+    if (this.indices.length > 0 && subMeshes.length > 0) {
+      passEncoder.setIndexBuffer(this.indexBuffer, "uint32");
+      for (const sm of subMeshes) {
+        const mat = materials[sm.materialIndex] || materials[0];
+        this.#writeMaterialUniform(mat);
+        passEncoder.drawIndexed(sm.indexCount, 1, sm.firstIndex, 0, 0);
+      }
+    } else if (this.indices.length > 0) {
+      passEncoder.setIndexBuffer(this.indexBuffer, "uint32");
+      this.#writeMaterialUniform(materials[0] || null);
       passEncoder.drawIndexed(this.indices.length);
     } else {
-      passEncoder.draw(this.vertexData.length / 18); // 18 = full vertex struct
+      this.#writeMaterialUniform(materials[0] || null);
+      passEncoder.draw(this.vertexData.length / 18);
     }
     
     passEncoder.end();
@@ -421,39 +432,34 @@ export default class Renderer {
     globalData.set([cameraPos[0], cameraPos[1], cameraPos[2], 0], 64); // offset 64-67
     
     this.device.queue.writeBuffer(this.globalUniformBuffer, 0, globalData);
+  }
 
-    // Prepare material uniforms data
-    const materials = model.getMaterials();
-    const material = materials.length > 0 ? materials[0] : null;
-    
-    // Layout mirrors MaterialUniforms struct order.
-    // baseColorFactor (vec4) + emissiveFactor (vec3) + alphaMode (f32) + metallic, roughness, normalScale, occlusionStrength, alphaCutoff, padding vec3
-    const materialData = new Float32Array(4 + 4 + 8); // 16 floats (64 bytes)
+  #writeMaterialUniform(material) {
+    const data = new Float32Array(16);
+    let o = 0;
     if (material) {
-      let o = 0;
-      materialData.set(material.baseColorFactor, o); o += 4;
-      materialData[o++] = material.emissiveFactor[0];
-      materialData[o++] = material.emissiveFactor[1];
-      materialData[o++] = material.emissiveFactor[2];
-      materialData[o++] = material.alphaMode;
-      materialData[o++] = material.metallicFactor;
-      materialData[o++] = material.roughnessFactor;
-      materialData[o++] = material.normalScale;
-      materialData[o++] = material.occlusionStrength;
-      materialData[o++] = material.alphaCutoff;
-      // padding (vec3)
-      materialData[o++] = 0.0;
-      materialData[o++] = 0.0;
-      materialData[o++] = 0.0;
+      data.set(material.baseColorFactor, o); o += 4;
+      data[o++] = material.emissiveFactor[0];
+      data[o++] = material.emissiveFactor[1];
+      data[o++] = material.emissiveFactor[2];
+      data[o++] = material.alphaMode;
+      data[o++] = material.metallicFactor;
+      data[o++] = material.roughnessFactor;
+      data[o++] = material.normalScale;
+      data[o++] = material.occlusionStrength;
+      data[o++] = material.alphaCutoff;
+      data[o++] = 0.0; // padding
+      data[o++] = 0.0;
+      data[o++] = 0.0;
     } else {
-      materialData.set([
+      data.set([
         1,1,1,1,
         0,0,0,0,
         1,1,1,1,
         0.5,0,0,0
       ]);
     }
-    this.device.queue.writeBuffer(this.materialUniformBuffer, 0, materialData.buffer);
+    this.device.queue.writeBuffer(this.materialUniformBuffer, 0, data.buffer);
   }
 
   #createVertexBuffer() {
