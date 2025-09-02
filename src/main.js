@@ -12,6 +12,7 @@ const model = new Model();
 const renderer = new Renderer();
 
 let isDragging = false;
+let isPanning = false;
 let lastMouseX = 0;
 let lastMouseY = 0;
 
@@ -19,26 +20,36 @@ let lastMouseY = 0;
 // Input handling
 
 function onMouseDown(event) {
-  isDragging = true;
+  if (event.button === 0) { // Left mouse button
+    isDragging = true;
+  } else if (event.button === 1) { // Middle mouse button
+    isPanning = true;
+    event.preventDefault(); // Prevent default middle-click behavior
+  }
+  
   lastMouseX = event.clientX;
   lastMouseY = event.clientY;
 }
 
-function onMouseUp() {
-  isDragging = false;
+function onMouseUp(event) {
+  if (event.button === 0) {
+    isDragging = false;
+  } else if (event.button === 1) {
+    isPanning = false;
+  }
 }
 
 function onMouseMove(event) {
-  if (!isDragging) return;
+  if (!isDragging && !isPanning) return;
 
   const deltaX = event.clientX - lastMouseX;
   const deltaY = event.clientY - lastMouseY;
   lastMouseX = event.clientX;
   lastMouseY = event.clientY;
 
-  if (event.shiftKey) {
-    camera.pan(deltaX, deltaY);
-  } else {
+  if (isPanning) {
+    camera.pan(-deltaX, deltaY);
+  } else if (isDragging) {
     camera.tumble(-deltaX, -deltaY);
   }
 }
