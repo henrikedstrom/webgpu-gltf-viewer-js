@@ -275,8 +275,8 @@ export default class Model {
         // Normal (vec3) - TODO: transform properly, for now use as-is
         normal: normals ? [normals[posIndex], normals[posIndex + 1], normals[posIndex + 2]] : [0, 0, 1],
         
-        // Tangent (vec4) - TODO: transform properly
-        tangent: tangents ? [tangents[tangentIndex], tangents[tangentIndex + 1], tangents[tangentIndex + 2], tangents[tangentIndex + 3]] : [1, 0, 0, 1],
+        // Tangent (vec4) - generate if missing
+        tangent: tangents ? [tangents[tangentIndex], tangents[tangentIndex + 1], tangents[tangentIndex + 2], tangents[tangentIndex + 3]] : this.#generateTangent(normals, posIndex),
         
         // Texture coordinates
         texCoord0: texCoord0 ? [texCoord0[uvIndex], texCoord0[uvIndex + 1]] : [0, 0],
@@ -306,19 +306,118 @@ export default class Model {
     this.m_subMeshes.push(subMesh);
   }
 
-  // Process materials from glTF (simplified for now)
+  // Process materials from glTF
   #processMaterials(gltf) {
     this.m_materials = [];
     
-    // TODO: Extract actual materials from glTF
-    this.m_materials.push(this.#createDefaultMaterial());
+    // Extract materials from Three.js scene
+    const materialMap = new Map(); // Track unique materials
+    
+    gltf.scene.traverse((object) => {
+      if (object.isMesh && object.material) {
+        const threeMaterial = object.material;
+        
+        // Skip if we've already processed this material
+        if (materialMap.has(threeMaterial)) {
+          return;
+        }
+        
+        // Extract material properties from Three.js material
+        const material = {
+          // Base color factor (vec4)
+          baseColorFactor: threeMaterial.color ? [
+            threeMaterial.color.r,
+            threeMaterial.color.g,
+            threeMaterial.color.b,
+            threeMaterial.opacity !== undefined ? threeMaterial.opacity : 1.0
+          ] : [1.0, 1.0, 1.0, 1.0],
+          
+          // Emissive factor (vec3)
+          emissiveFactor: threeMaterial.emissive ? [
+            threeMaterial.emissive.r,
+            threeMaterial.emissive.g,
+            threeMaterial.emissive.b
+          ] : [0.0, 0.0, 0.0],
+          
+          // PBR properties
+          metallicFactor: threeMaterial.metalness !== undefined ? threeMaterial.metalness : 0.0,
+          roughnessFactor: threeMaterial.roughness !== undefined ? threeMaterial.roughness : 0.5,
+          normalScale: threeMaterial.normalScale ? threeMaterial.normalScale.x : 1.0,
+          occlusionStrength: 1.0, // Three.js doesn't expose this directly
+          
+          // Alpha properties
+          alphaMode: this.#getAlphaMode(threeMaterial),
+          alphaCutoff: threeMaterial.alphaTest !== undefined ? threeMaterial.alphaTest : 0.5,
+          doubleSided: threeMaterial.side === 2, // THREE.DoubleSide = 2
+          
+          // Texture indices (will be set when processing textures)
+          baseColorTexture: -1,
+          metallicRoughnessTexture: -1,
+          normalTexture: -1,
+          emissiveTexture: -1,
+          occlusionTexture: -1
+        };
+        
+        this.m_materials.push(material);
+        materialMap.set(threeMaterial, this.m_materials.length - 1);  
+      }
+    });
+    
+    // If no materials found, create a default one
+    if (this.m_materials.length === 0) {
+      console.log("No materials found in model, using default");
+      this.m_materials.push(this.#createDefaultMaterial());
+    }
   }
 
-  // Process textures from glTF (simplified for now)  
+  // Process textures from glTF
   #processTextures(gltf) {
     this.m_textures = [];
+    const textureMap = new Map(); // Track unique textures
     
-    // TODO: Extract actual textures from glTF
+    // Process each material to extract all texture types
+    gltf.scene.traverse((object) => {
+      if (object.isMesh && object.material) {
+        const material = object.material;
+        
+        // Define texture types to extract
+        const textureTypes = [
+          { prop: 'map', name: 'baseColor', type: 'baseColor' },
+          { prop: 'normalMap', name: 'normal', type: 'normal' },
+          { prop: 'roughnessMap', name: 'metallicRoughness', type: 'metallicRoughness' }, // Three.js uses separate maps
+          { prop: 'metalnessMap', name: 'metallicRoughness', type: 'metallicRoughness' },
+          { prop: 'emissiveMap', name: 'emissive', type: 'emissive' },
+          { prop: 'aoMap', name: 'occlusion', type: 'occlusion' }
+        ];
+        
+        textureTypes.forEach(({ prop, name, type }) => {
+          const threeTexture = material[prop];
+          
+          if (threeTexture && threeTexture.image) {
+            // Skip if we've already processed this texture
+            if (textureMap.has(threeTexture)) {
+              return;
+            }
+            
+            const texture = {
+              name: threeTexture.name || name,
+              type: type, // Store texture type for identification
+              width: threeTexture.image.width,
+              height: threeTexture.image.height,
+              components: 4, // Assume RGBA
+              image: threeTexture.image, // Store the HTML Image element
+              threeTexture: threeTexture // Store Three.js texture reference
+            };
+            
+            this.m_textures.push(texture);
+            textureMap.set(threeTexture, this.m_textures.length - 1);
+            
+          } else if (threeTexture) {
+            console.log(`Texture ${prop} exists but has no image data`);
+          }
+        });
+      }
+    });
   }
 
   // Get alpha mode from material
@@ -368,6 +467,42 @@ export default class Model {
       if (pos[2] < this.m_minBounds[2]) this.m_minBounds[2] = pos[2];
       if (pos[2] > this.m_maxBounds[2]) this.m_maxBounds[2] = pos[2];
     }
+  }
+
+  // Generate a simple tangent when not provided
+  #generateTangent(normals, posIndex) {
+
+    if (!normals) {
+      return [1, 0, 0, 1]; // Default tangent
+    }
+    
+    // Get the normal for this vertex
+    const normal = [normals[posIndex], normals[posIndex + 1], normals[posIndex + 2]];
+    
+    // Generate a tangent perpendicular to the normal
+    // Choose the axis that's most different from the normal
+    let tangent;
+    if (Math.abs(normal[0]) < 0.9) {
+      tangent = [1, 0, 0]; // Use X axis
+    } else {
+      tangent = [0, 1, 0]; // Use Y axis
+    }
+    
+    // Make tangent perpendicular to normal using Gram-Schmidt
+    const dot = tangent[0] * normal[0] + tangent[1] * normal[1] + tangent[2] * normal[2];
+    tangent[0] -= dot * normal[0];
+    tangent[1] -= dot * normal[1];
+    tangent[2] -= dot * normal[2];
+    
+    // Normalize
+    const length = Math.sqrt(tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2]);
+    if (length > 0.001) {
+      tangent[0] /= length;
+      tangent[1] /= length;
+      tangent[2] /= length;
+    }
+    
+    return [tangent[0], tangent[1], tangent[2], 1.0]; // w=1 for handedness
   }
 
   // Private method to clear all data

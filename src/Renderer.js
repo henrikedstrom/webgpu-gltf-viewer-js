@@ -11,7 +11,11 @@ export default class Renderer {
     this.depthTexture = null;
     this.depthTextureView = null;
     this.pipeline = null;
-    this.uniformBuffer = null;
+    this.globalUniformBuffer = null;
+    this.materialUniformBuffer = null;
+    this.sampler = null;
+    this.defaultTexture = null;
+    this.defaultNormalTexture = null;
     this.bindGroup = null;
     
     // Model-specific resources
@@ -19,6 +23,8 @@ export default class Renderer {
     this.indexBuffer = null;
     this.indices = null;
     this.vertexData = null;
+    this.modelTextures = [];
+    this.modelTextureTypes = [];
     
     // Render pass descriptor
     this.renderPassDescriptor = null;
@@ -39,11 +45,15 @@ export default class Renderer {
     // Create depth buffer
     this.#createDepthTexture();
     
+    // Create resources first
+    this.#createDefaultTexture();
+    this.#createSampler();
+    
     // Create rendering pipeline
     await this.#createPipeline();
     
-    // Create uniform buffer
-    this.#createUniformBuffer();
+    // Create uniform buffers (after pipeline, so we can create bind groups)
+    this.#createUniformBuffers();
     
     // Setup model resources
     await this.updateModel(model);
@@ -64,16 +74,19 @@ export default class Renderer {
     
     // Create index buffer
     this.#createIndexBuffer();
+    
+    // Load model textures
+    await this.#loadModelTextures(model);
+    
+    // Recreate bind group with actual textures
+    this.#createBindGroup();
   }
 
   render(model, camera) {
     if (!model.isLoaded()) return;
 
-    // Create transformation matrix
-    const transformationMatrix = this.#createTransformationMatrix(model, camera);
-    
-    // Update uniforms
-    this.device.queue.writeBuffer(this.uniformBuffer, 0, transformationMatrix);
+    // Update all uniforms
+    this.#updateUniforms(model, camera);
 
     // Get current texture
     const currentTexture = this.context.getCurrentTexture();
@@ -157,13 +170,38 @@ export default class Renderer {
     // Create shader module
     const shaderModule = this.device.createShaderModule({ code: shaderCode });
 
-    // Create bind group layout
+    // Create bind group layout for PBR with multiple textures
     const bindGroupLayout = this.device.createBindGroupLayout({
       entries: [
         {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX,
+          binding: 0, // GlobalUniforms
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
           buffer: { type: "uniform" },
+        },
+        {
+          binding: 1, // MaterialUniforms  
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+        {
+          binding: 2, // Texture sampler
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: {},
+        },
+        {
+          binding: 3, // Base color texture
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: {},
+        },
+        {
+          binding: 4, // Metallic-roughness texture
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: {},
+        },
+        {
+          binding: 5, // Normal texture
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: {},
         },
       ],
     });
@@ -233,24 +271,201 @@ export default class Renderer {
     });
   }
 
-  #createUniformBuffer() {
-    this.uniformBuffer = this.device.createBuffer({
-      size: 256, // Uniform buffers must be aligned to 256 bytes
+  #createUniformBuffers() {
+    // Global uniforms: 5 mat4 + 1 vec3 + padding = 80*4 + 16 = 336 bytes, round up to 256-byte alignment
+    this.globalUniformBuffer = this.device.createBuffer({
+      size: 512, // Enough space for all global uniforms
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Create bind group
+    // Material uniforms: vec4 + f32 + f32 + vec2 = 32 bytes, round up to 256
+    this.materialUniformBuffer = this.device.createBuffer({
+      size: 256,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Initial bind group with default texture
+    this.#createBindGroup();
+  }
+
+  #createBindGroup() {
+    // Find textures by type, use appropriate defaults
+    const baseColorTexture = this.#findTextureByType('baseColor') || this.defaultTexture;
+    const metallicRoughnessTexture = this.#findTextureByType('metallicRoughness') || this.defaultTexture;
+    const normalTexture = this.#findTextureByType('normal') || this.defaultNormalTexture;
+
     this.bindGroup = this.device.createBindGroup({
       layout: this.pipeline.getBindGroupLayout(0),
       entries: [
         {
-          binding: 0,
-          resource: {
-            buffer: this.uniformBuffer,
-          },
+          binding: 0, // Global uniforms
+          resource: { buffer: this.globalUniformBuffer },
+        },
+        {
+          binding: 1, // Material uniforms
+          resource: { buffer: this.materialUniformBuffer },
+        },
+        {
+          binding: 2, // Sampler
+          resource: this.sampler,
+        },
+        {
+          binding: 3, // Base color texture
+          resource: baseColorTexture.createView(),
+        },
+        {
+          binding: 4, // Metallic-roughness texture
+          resource: metallicRoughnessTexture.createView(),
+        },
+        {
+          binding: 5, // Normal texture
+          resource: normalTexture.createView(),
         },
       ],
     });
+  }
+
+  #findTextureByType(type) {
+    for (let i = 0; i < this.modelTextures.length; i++) {
+      if (this.modelTextureTypes[i] === type) {
+        return this.modelTextures[i];
+      }
+    }
+    return null;
+  }
+
+  async #loadModelTextures(model) {
+    this.modelTextures = [];
+    this.modelTextureTypes = [];
+    
+    const textures = model.getTextures();
+    
+    for (const texture of textures) {
+      if (texture.image) {
+        // Create WebGPU texture from HTML Image
+        const webgpuTexture = this.device.createTexture({
+          size: [texture.width, texture.height, 1],
+          format: 'rgba8unorm',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+
+        // Copy image data to WebGPU texture
+        this.device.queue.copyExternalImageToTexture(
+          { source: texture.image },
+          { texture: webgpuTexture },
+          [texture.width, texture.height]
+        );
+
+        this.modelTextures.push(webgpuTexture);
+        this.modelTextureTypes.push(texture.type); // Track texture type
+      }
+    }
+  }
+
+  #createSampler() {
+    this.sampler = this.device.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear',
+      mipmapFilter: 'linear',
+      addressModeU: 'repeat',
+      addressModeV: 'repeat',
+    });
+  }
+
+  #createDefaultTexture() {
+    // Create a 1x1 white texture as default for base color
+    this.defaultTexture = this.device.createTexture({
+      size: [1, 1, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+
+    // Write white pixel data
+    const whitePixel = new Uint8Array([255, 255, 255, 255]);
+    this.device.queue.writeTexture(
+      { texture: this.defaultTexture },
+      whitePixel,
+      { bytesPerRow: 4 },
+      { width: 1, height: 1 }
+    );
+
+    // Create a 1x1 "flat" normal texture (128, 128, 255, 255 = [0, 0, 1] in tangent space)
+    this.defaultNormalTexture = this.device.createTexture({
+      size: [1, 1, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+
+    // Write flat normal data (pointing straight up in tangent space)
+    const flatNormal = new Uint8Array([128, 128, 255, 255]); // [0.5, 0.5, 1.0, 1.0] in [0,1] range
+    this.device.queue.writeTexture(
+      { texture: this.defaultNormalTexture },
+      flatNormal,
+      { bytesPerRow: 4 },
+      { width: 1, height: 1 }
+    );
+  }
+
+  #updateUniforms(model, camera) {
+    // Prepare global uniforms data
+    const globalData = new Float32Array(80); // 5 matrices * 16 floats + 4 floats for camera pos
+    
+    const viewMatrix = camera.getViewMatrix();
+    const projectionMatrix = camera.getProjectionMatrix();
+    const modelMatrix = model.getTransform();
+    // Compute normal matrix: inverse transpose of upper 3x3 of model matrix
+    const modelMatrix3x3 = [
+      modelMatrix[0], modelMatrix[1], modelMatrix[2],
+      modelMatrix[4], modelMatrix[5], modelMatrix[6], 
+      modelMatrix[8], modelMatrix[9], modelMatrix[10]
+    ];
+    
+    // Create 3x3 matrix, invert it, then transpose
+    const temp3x3 = mat4.create();
+    mat4.set(temp3x3, 
+      modelMatrix3x3[0], modelMatrix3x3[1], modelMatrix3x3[2], 0,
+      modelMatrix3x3[3], modelMatrix3x3[4], modelMatrix3x3[5], 0,
+      modelMatrix3x3[6], modelMatrix3x3[7], modelMatrix3x3[8], 0,
+      0, 0, 0, 1
+    );
+    
+    const normalMatrix3x3 = mat4.create();
+    mat4.transpose(normalMatrix3x3, mat4.invert(normalMatrix3x3, temp3x3));
+    
+    // Convert back to 4x4 with identity for the 4th row/column
+    const normalMatrix = mat4.create();
+    mat4.identity(normalMatrix);
+    normalMatrix[0] = normalMatrix3x3[0]; normalMatrix[1] = normalMatrix3x3[1]; normalMatrix[2] = normalMatrix3x3[2];
+    normalMatrix[4] = normalMatrix3x3[4]; normalMatrix[5] = normalMatrix3x3[5]; normalMatrix[6] = normalMatrix3x3[6];
+    normalMatrix[8] = normalMatrix3x3[8]; normalMatrix[9] = normalMatrix3x3[9]; normalMatrix[10] = normalMatrix3x3[10];
+    const cameraPos = camera.getWorldPosition();
+    
+    // Pack matrices (each matrix is 16 floats)
+    globalData.set(viewMatrix, 0);           // offset 0-15
+    globalData.set(projectionMatrix, 16);    // offset 16-31  
+    globalData.set(modelMatrix, 32);         // offset 32-47
+    globalData.set(normalMatrix, 48);        // offset 48-63
+    globalData.set([cameraPos[0], cameraPos[1], cameraPos[2], 0], 64); // offset 64-67
+    
+    this.device.queue.writeBuffer(this.globalUniformBuffer, 0, globalData);
+
+    // Prepare material uniforms data
+    const materials = model.getMaterials();
+    const material = materials.length > 0 ? materials[0] : null;
+    
+    const materialData = new Float32Array(8); // vec4 + f32 + f32 + f32 + f32 = 8 floats
+    if (material) {
+      materialData.set(material.baseColorFactor, 0);     // vec4 at offset 0-3
+      materialData[4] = material.metallicFactor;          // f32 at offset 4
+      materialData[5] = material.roughnessFactor;         // f32 at offset 5
+      materialData[6] = material.normalScale;             // f32 at offset 6
+      materialData[7] = 0.0; // padding
+    } else {
+      materialData.set([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0]); // Default material with normalScale=1.0
+      console.log('Using default material uniforms');
+    }
+    
+    this.device.queue.writeBuffer(this.materialUniformBuffer, 0, materialData);
   }
 
   #createVertexBuffer() {
@@ -309,22 +524,7 @@ export default class Renderer {
     };
   }
 
-  #createTransformationMatrix(model, camera) {
-    const transformationMatrix = mat4.create();
 
-    // Apply model transformation
-    mat4.copy(transformationMatrix, model.getTransform());
-
-    // Apply camera view matrix
-    const viewMatrix = camera.getViewMatrix();
-    mat4.multiply(transformationMatrix, viewMatrix, transformationMatrix);
-
-    // Apply camera projection matrix
-    const projectionMatrix = camera.getProjectionMatrix();
-    mat4.multiply(transformationMatrix, projectionMatrix, transformationMatrix);
-
-    return transformationMatrix;
-  }
 
   // Load shader file from disk
   async #loadShaderFile(path) {
