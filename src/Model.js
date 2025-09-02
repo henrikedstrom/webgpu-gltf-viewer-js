@@ -1,5 +1,5 @@
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-const { mat4, vec3 } = glMatrix;
+const { mat4, vec3, mat3 } = glMatrix;
 
 // Alpha modes
 export const AlphaMode = {
@@ -261,14 +261,23 @@ export default class Model {
       maxBounds: vec3.fromValues(-Infinity, -Infinity, -Infinity),
     };
 
-    // Process each vertex
+    // Precompute matrices for normal / tangent transform
+    const linear3x3 = mat3.create();
+    mat3.fromMat4(linear3x3, transform);
+    const normalMatrix = mat3.create();
+    if (!mat3.invert(normalMatrix, linear3x3)) {
+      mat3.identity(normalMatrix); // Fallback if non-invertible (degenerate scale)
+    }
+    mat3.transpose(normalMatrix, normalMatrix);
+
+    // Process each vertex with proper normal/tangent transforms
     for (let i = 0; i < vertexCount; i++) {
       const posIndex = i * 3;
       const uvIndex = i * 2;
       const tangentIndex = i * 4;
       const colorIndex = i * 4;
 
-      // Transform position by accumulated transform matrix
+      // Position
       const localPos = vec3.fromValues(
         positions[posIndex],
         positions[posIndex + 1],
@@ -277,7 +286,7 @@ export default class Model {
       const worldPos = vec3.create();
       vec3.transformMat4(worldPos, localPos, transform);
 
-      // Update submesh bounds
+      // Bounds
       if (worldPos[0] < subMesh.minBounds[0])
         subMesh.minBounds[0] = worldPos[0];
       if (worldPos[0] > subMesh.maxBounds[0])
@@ -291,35 +300,50 @@ export default class Model {
       if (worldPos[2] > subMesh.maxBounds[2])
         subMesh.maxBounds[2] = worldPos[2];
 
-      // Create vertex object
+      // Normal
+      let normalArr;
+      if (normals) {
+        const n = vec3.fromValues(
+          normals[posIndex],
+          normals[posIndex + 1],
+          normals[posIndex + 2]
+        );
+        vec3.transformMat3(n, n, normalMatrix);
+        vec3.normalize(n, n);
+        normalArr = [n[0], n[1], n[2]];
+      } else {
+        normalArr = [0, 0, 1];
+      }
+
+      // Tangent
+      let tangentOut;
+      if (tangents) {
+        const t = vec3.fromValues(
+          tangents[tangentIndex],
+          tangents[tangentIndex + 1],
+          tangents[tangentIndex + 2]
+        );
+        vec3.transformMat3(t, t, linear3x3);
+        vec3.normalize(t, t);
+        tangentOut = [t[0], t[1], t[2], tangents[tangentIndex + 3]];
+      } else {
+        const gen = this.#generateTangent(normals, posIndex);
+        const t = vec3.fromValues(gen[0], gen[1], gen[2]);
+        vec3.transformMat3(t, t, linear3x3);
+        vec3.normalize(t, t);
+        tangentOut = [t[0], t[1], t[2], gen[3]];
+      }
+
       const vertex = {
-        // Position (vec3) - transformed
         position: [worldPos[0], worldPos[1], worldPos[2]],
-
-        // Normal (vec3) - TODO: transform properly, for now use as-is
-        normal: normals
-          ? [normals[posIndex], normals[posIndex + 1], normals[posIndex + 2]]
-          : [0, 0, 1],
-
-        // Tangent (vec4) - generate if missing
-        tangent: tangents
-          ? [
-              tangents[tangentIndex],
-              tangents[tangentIndex + 1],
-              tangents[tangentIndex + 2],
-              tangents[tangentIndex + 3],
-            ]
-          : this.#generateTangent(normals, posIndex),
-
-        // Texture coordinates
+        normal: normalArr,
+        tangent: tangentOut,
         texCoord0: texCoord0
           ? [texCoord0[uvIndex], texCoord0[uvIndex + 1]]
           : [0, 0],
         texCoord1: texCoord1
           ? [texCoord1[uvIndex], texCoord1[uvIndex + 1]]
           : [0, 0],
-
-        // Color
         color: colors
           ? [
               colors[colorIndex] || 1,
@@ -329,7 +353,6 @@ export default class Model {
             ]
           : [1, 1, 1, 1],
       };
-
       this.m_vertices.push(vertex);
     }
 
@@ -446,11 +469,13 @@ export default class Model {
   #processTextures(gltf) {
     this.m_textures = [];
     const textureMap = new Map(); // Track unique textures
+    const materialIndexMap = this._materialIndexMap || new Map();
 
     // Process each material to extract all texture types
     gltf.scene.traverse((object) => {
       if (object.isMesh && object.material) {
         const material = object.material;
+        const modelMaterialIndex = materialIndexMap.get(material);
 
         // Define texture types to extract
         const textureTypes = [
@@ -472,25 +497,47 @@ export default class Model {
 
         textureTypes.forEach(({ prop, name, type }) => {
           const threeTexture = material[prop];
-
           if (threeTexture && threeTexture.image) {
-            // Skip if we've already processed this texture
-            if (textureMap.has(threeTexture)) {
-              return;
+            // Add texture if not already tracked
+            if (!textureMap.has(threeTexture)) {
+              const texture = {
+                name: threeTexture.name || name,
+                type: type,
+                width: threeTexture.image.width,
+                height: threeTexture.image.height,
+                components: 4,
+                image: threeTexture.image,
+                threeTexture: threeTexture,
+              };
+              this.m_textures.push(texture);
+              textureMap.set(threeTexture, this.m_textures.length - 1);
             }
 
-            const texture = {
-              name: threeTexture.name || name,
-              type: type, // Store texture type for identification
-              width: threeTexture.image.width,
-              height: threeTexture.image.height,
-              components: 4, // Assume RGBA
-              image: threeTexture.image, // Store the HTML Image element
-              threeTexture: threeTexture, // Store Three.js texture reference
-            };
-
-            this.m_textures.push(texture);
-            textureMap.set(threeTexture, this.m_textures.length - 1);
+            // Assign texture index to the corresponding material struct
+            if (modelMaterialIndex !== undefined) {
+              const texIndex = textureMap.get(threeTexture);
+              const modelMaterial = this.m_materials[modelMaterialIndex];
+              if (modelMaterial) {
+                switch (type) {
+                  case "baseColor":
+                    modelMaterial.baseColorTexture = texIndex;
+                    break;
+                  case "normal":
+                    modelMaterial.normalTexture = texIndex;
+                    break;
+                  case "metallicRoughness":
+                    // glTF packs both metallic & roughness in one texture; we map either source map here
+                    modelMaterial.metallicRoughnessTexture = texIndex;
+                    break;
+                  case "emissive":
+                    modelMaterial.emissiveTexture = texIndex;
+                    break;
+                  case "occlusion":
+                    modelMaterial.occlusionTexture = texIndex;
+                    break;
+                }
+              }
+            }
           } else if (threeTexture) {
             console.log(`Texture ${prop} exists but has no image data`);
           }

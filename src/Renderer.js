@@ -12,11 +12,12 @@ export default class Renderer {
     this.depthTextureView = null;
     this.pipeline = null;
     this.globalUniformBuffer = null;
-    this.materialUniformBuffer = null;
     this.sampler = null;
     this.defaultTexture = null;
     this.defaultNormalTexture = null;
-    this.bindGroup = null;
+    // Per-material resources
+    this.materialBindGroups = []; // bind group per material (global + that material's uniforms + its textures)
+    this.materialUniformBuffers = []; // uniform buffer per material
 
     // Model-specific resources
     this.vertexBuffer = null;
@@ -75,11 +76,9 @@ export default class Renderer {
     // Create index buffer
     this.#createIndexBuffer();
 
-    // Load model textures
+    // Load model textures then build per-material bind groups
     await this.#loadModelTextures(model);
-
-    // Recreate bind group with actual textures
-    this.#createBindGroup();
+    this.#createMaterialBindGroups(model);
   }
 
   render(model, camera) {
@@ -101,7 +100,6 @@ export default class Renderer {
 
     // Issue drawing commands (per submesh with material)
     passEncoder.setPipeline(this.pipeline);
-    passEncoder.setBindGroup(0, this.bindGroup);
     passEncoder.setVertexBuffer(0, this.vertexBuffer);
 
     const subMeshes = model.getSubMeshes();
@@ -109,16 +107,33 @@ export default class Renderer {
     if (this.indices.length > 0 && subMeshes.length > 0) {
       passEncoder.setIndexBuffer(this.indexBuffer, "uint32");
       for (const sm of subMeshes) {
-        const mat = materials[sm.materialIndex] || materials[0];
-        this.#writeMaterialUniform(mat);
+        const matIndex =
+          sm.materialIndex >= 0 &&
+          sm.materialIndex < this.materialBindGroups.length
+            ? sm.materialIndex
+            : 0;
+        const bg = this.materialBindGroups[matIndex];
+        if (!bg) {
+          console.warn("Missing bind group for material", matIndex);
+          continue;
+        }
+        passEncoder.setBindGroup(0, bg);
         passEncoder.drawIndexed(sm.indexCount, 1, sm.firstIndex, 0, 0);
       }
     } else if (this.indices.length > 0) {
       passEncoder.setIndexBuffer(this.indexBuffer, "uint32");
-      this.#writeMaterialUniform(materials[0] || null);
+      if (!this.materialBindGroups[0]) {
+        console.warn("No material bind groups");
+        return;
+      }
+      passEncoder.setBindGroup(0, this.materialBindGroups[0]);
       passEncoder.drawIndexed(this.indices.length);
     } else {
-      this.#writeMaterialUniform(materials[0] || null);
+      if (!this.materialBindGroups[0]) {
+        console.warn("No material bind groups");
+        return;
+      }
+      passEncoder.setBindGroup(0, this.materialBindGroups[0]);
       passEncoder.draw(this.vertexData.length / 18);
     }
 
@@ -279,51 +294,77 @@ export default class Renderer {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Material uniforms: 4 vec4 = 64 bytes, we allocate 256 for alignment / future params
-    this.materialUniformBuffer = this.device.createBuffer({
-      size: 256,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    // Initial bind group with default texture
-    this.#createBindGroup();
+    // Per-material uniform buffers created later in #createMaterialBindGroups
   }
 
-  #createBindGroup() {
-    // Find textures by type, use appropriate defaults
-    const baseColorTexture =
-      this.#findTextureByType("baseColor") || this.defaultTexture;
-    const metallicRoughnessTexture =
-      this.#findTextureByType("metallicRoughness") || this.defaultTexture;
-    const normalTexture =
-      this.#findTextureByType("normal") || this.defaultNormalTexture;
-    const occlusionTexture =
-      this.#findTextureByType("occlusion") || this.defaultTexture;
-    const emissiveTexture =
-      this.#findTextureByType("emissive") || this.defaultTexture;
+  #createMaterialBindGroups(model) {
+    this.materialBindGroups = [];
+    this.materialUniformBuffers = [];
+    if (!this.pipeline) return; // pipeline must exist
 
-    this.bindGroup = this.device.createBindGroup({
-      layout: this.pipeline.getBindGroupLayout(0),
-      entries: [
-        {
-          binding: 0, // Global uniforms
-          resource: { buffer: this.globalUniformBuffer },
-        },
-        {
-          binding: 1, // Material uniforms
-          resource: { buffer: this.materialUniformBuffer },
-        },
-        {
-          binding: 2, // Sampler
-          resource: this.sampler,
-        },
-        { binding: 3, resource: baseColorTexture.createView() },
-        { binding: 4, resource: metallicRoughnessTexture.createView() },
-        { binding: 5, resource: normalTexture.createView() },
-        { binding: 6, resource: occlusionTexture.createView() },
-        { binding: 7, resource: emissiveTexture.createView() },
-      ],
-    });
+    const materials = model.getMaterials();
+    if (!materials || materials.length === 0) return;
+
+    const layout = this.pipeline.getBindGroupLayout(0);
+
+    // Helper to fetch texture by direct index (already mapped) or fallback
+    const texOrDefault = (idx, kind) => {
+      if (idx !== undefined && idx >= 0 && idx < this.modelTextures.length) {
+        return this.modelTextures[idx];
+      }
+      if (kind === "normal") return this.defaultNormalTexture;
+      return this.defaultTexture;
+    };
+
+    for (let i = 0; i < materials.length; i++) {
+      const m = materials[i];
+
+      // Create per-material uniform buffer
+      const ub = this.device.createBuffer({
+        size: 256,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      const data = new Float32Array(16);
+      let o = 0;
+      data.set(m.baseColorFactor, o);
+      o += 4;
+      data[o++] = m.emissiveFactor[0];
+      data[o++] = m.emissiveFactor[1];
+      data[o++] = m.emissiveFactor[2];
+      data[o++] = m.alphaMode;
+      data[o++] = m.metallicFactor;
+      data[o++] = m.roughnessFactor;
+      data[o++] = m.normalScale;
+      data[o++] = m.occlusionStrength;
+      data[o++] = m.alphaCutoff;
+      while (o < 16) data[o++] = 0.0;
+      this.device.queue.writeBuffer(ub, 0, data.buffer);
+      this.materialUniformBuffers.push(ub);
+
+      const baseColorTex = texOrDefault(m.baseColorTexture, "baseColor");
+      const mrTex = texOrDefault(
+        m.metallicRoughnessTexture,
+        "metallicRoughness"
+      );
+      const normalTex = texOrDefault(m.normalTexture, "normal");
+      const occTex = texOrDefault(m.occlusionTexture, "occlusion");
+      const emissiveTex = texOrDefault(m.emissiveTexture, "emissive");
+
+      const bg = this.device.createBindGroup({
+        layout,
+        entries: [
+          { binding: 0, resource: { buffer: this.globalUniformBuffer } },
+          { binding: 1, resource: { buffer: ub } },
+          { binding: 2, resource: this.sampler },
+          { binding: 3, resource: baseColorTex.createView() },
+          { binding: 4, resource: mrTex.createView() },
+          { binding: 5, resource: normalTex.createView() },
+          { binding: 6, resource: occTex.createView() },
+          { binding: 7, resource: emissiveTex.createView() },
+        ],
+      });
+      this.materialBindGroups.push(bg);
+    }
   }
 
   #findTextureByType(type) {
@@ -477,30 +518,6 @@ export default class Renderer {
     globalData.set([cameraPos[0], cameraPos[1], cameraPos[2], 0], 64); // offset 64-67
 
     this.device.queue.writeBuffer(this.globalUniformBuffer, 0, globalData);
-  }
-
-  #writeMaterialUniform(material) {
-    const data = new Float32Array(16);
-    let o = 0;
-    if (material) {
-      data.set(material.baseColorFactor, o);
-      o += 4;
-      data[o++] = material.emissiveFactor[0];
-      data[o++] = material.emissiveFactor[1];
-      data[o++] = material.emissiveFactor[2];
-      data[o++] = material.alphaMode;
-      data[o++] = material.metallicFactor;
-      data[o++] = material.roughnessFactor;
-      data[o++] = material.normalScale;
-      data[o++] = material.occlusionStrength;
-      data[o++] = material.alphaCutoff;
-      data[o++] = 0.0; // padding
-      data[o++] = 0.0;
-      data[o++] = 0.0;
-    } else {
-      data.set([1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0.5, 0, 0, 0]);
-    }
-    this.device.queue.writeBuffer(this.materialUniformBuffer, 0, data.buffer);
   }
 
   #createVertexBuffer() {
