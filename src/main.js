@@ -118,7 +118,17 @@ async function launchApp() {
   let isAnimating = true;
   window.addEventListener("keydown", (event) => {
     if (event.key === "a" || event.key === "A") {
-      isAnimating = !isAnimating;
+      // Shift-A resets the model orientation
+      if (event.shiftKey) {
+        model.resetOrientation();
+      } else {
+        // 'a' toggles model animation
+        isAnimating = !isAnimating;
+      }
+    } else if (event.key === "Home") {
+      // HOME key resets camera to frame model
+      const bounds = model.getBounds();
+      camera.resetToModel(bounds.min, bounds.max);
     }
   });
 
