@@ -390,10 +390,16 @@ export default class Renderer {
 
     for (const texture of textures) {
       if (texture.image) {
+        // Determine correct format based on texture type
+        // Color textures (baseColor, emissive) need sRGB format
+        // Data textures (normal, metallic-roughness, occlusion) need linear format
+        const needsSrgb = texture.type === "baseColor" || texture.type === "emissive";
+        const format = needsSrgb ? "rgba8unorm-srgb" : "rgba8unorm";
+        
         // Create WebGPU texture from HTML Image
         const webgpuTexture = this.device.createTexture({
           size: [texture.width, texture.height, 1],
-          format: "rgba8unorm",
+          format: format,
           usage:
             GPUTextureUsage.TEXTURE_BINDING |
             GPUTextureUsage.COPY_DST |
@@ -424,10 +430,10 @@ export default class Renderer {
   }
 
   #createDefaultTexture() {
-    // Create a 1x1 white texture as default for base color
+    // Create a 1x1 white texture as default for base color (sRGB format)
     this.defaultTexture = this.device.createTexture({
       size: [1, 1, 1],
-      format: "rgba8unorm",
+      format: "rgba8unorm-srgb",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
 
