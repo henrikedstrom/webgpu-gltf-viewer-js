@@ -17,6 +17,79 @@ let lastMouseX = 0;
 let lastMouseY = 0;
 
 //--------------------------------------------------------------------------------
+// Drag and Drop handling
+
+function showErrorPopup(message) {
+  let popup = document.createElement("div");
+  popup.innerText = message;
+  popup.style.position = "fixed";
+  popup.style.top = "50%";
+  popup.style.left = "50%";
+  popup.style.transform = "translate(-50%, -50%)";
+  popup.style.backgroundColor = "rgba(255, 0, 0, 0.8)";
+  popup.style.color = "white";
+  popup.style.padding = "15px 25px";
+  popup.style.borderRadius = "8px";
+  popup.style.fontSize = "18px";
+  popup.style.fontWeight = "bold";
+  popup.style.zIndex = "1000";
+
+  document.body.appendChild(popup);
+
+  setTimeout(() => {
+    popup.remove();
+  }, 3000); // Auto-hide after 3 seconds
+
+  console.error('ERROR: ' + message);
+}
+
+function setupDragAndDrop(canvas) {
+  canvas.ondragover = function(event) { 
+    event.preventDefault(); 
+  };
+
+  canvas.ondrop = async function(event) {
+    event.preventDefault();
+    
+    let file = event.dataTransfer.files[0];
+    if (!file) return;
+    
+    // Check file extension
+    const extension = file.name.slice(file.name.lastIndexOf(".") + 1).toLowerCase();
+    if (extension !== "glb" && extension !== "gltf") {
+      showErrorPopup("Unsupported file type: " + file.name + ". Only .glb and .gltf files are supported.");
+      return;
+    }
+    
+    console.log(`Dropped file: ${file.name} (Size: ${file.size} bytes)`);
+    
+    try {
+      // Create a blob URL for the dropped file
+      const fileURL = URL.createObjectURL(file);
+      
+      // Load the new model
+      await model.load(fileURL);
+      
+      // Reset camera to frame the new model
+      const bounds = model.getBounds();
+      camera.resetToModel(bounds.min, bounds.max);
+      
+      // Update renderer with new model
+      await renderer.updateModel(model);
+      
+      // Clean up the blob URL
+      URL.revokeObjectURL(fileURL);
+      
+      console.log(`Successfully loaded model: ${file.name}`);
+      
+    } catch (error) {
+      showErrorPopup("Failed to load model: " + file.name);
+      console.error("Model loading error:", error);
+    }
+  };
+}
+
+//--------------------------------------------------------------------------------
 // Input handling
 
 function onMouseDown(event) {
@@ -90,6 +163,9 @@ async function launchApp() {
   canvas.addEventListener("mouseup", onMouseUp);
   canvas.addEventListener("wheel", onMouseWheel);
   canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
+  // Setup drag-and-drop handlers
+  setupDragAndDrop(canvas);
 
   // Load model
   try {
