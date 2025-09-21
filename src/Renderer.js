@@ -84,6 +84,12 @@ export default class Renderer {
   render(model, camera) {
     if (!model.isLoaded()) return;
 
+    // Skip rendering if pipeline is not ready
+    if (!this.pipeline) {
+      console.warn("Pipeline not ready, skipping render");
+      return;
+    }
+
     // Update all uniforms
     this.#updateUniforms(model, camera);
 
@@ -576,10 +582,44 @@ export default class Renderer {
     };
   }
 
+  // Reload shaders from disk
+  async reloadShaders() {
+    console.log("Destroying existing shader resources...");
+    
+    // Store references to current pipeline in case reload fails
+    const oldPipeline = this.pipeline;
+    const oldShaderModule = this.shaderModule;
+    
+    try {
+      // Clear current pipeline and shader module
+      this.pipeline = null;
+      this.shaderModule = null;
+      
+      console.log("Loading shader from disk...");
+      
+      // Recreate the pipeline with fresh shader code
+      await this.#createPipeline();
+      
+      console.log("Shader pipeline recreated successfully!");
+    } catch (error) {
+      console.error("Failed to reload shaders, restoring previous pipeline:", error);
+      
+      // Restore previous pipeline if reload failed
+      this.pipeline = oldPipeline;
+      this.shaderModule = oldShaderModule;
+      
+      throw error; // Re-throw so caller knows it failed
+    }
+  }
+
   // Load shader file from disk
   async #loadShaderFile(path) {
     try {
-      const response = await fetch(path);
+      // Add cache-busting parameter to force reload from disk
+      const cacheBuster = `?t=${Date.now()}`;
+      const response = await fetch(path + cacheBuster, {
+        cache: 'no-cache'
+      });
       if (!response.ok) {
         throw new Error(
           `Failed to load shader: ${response.status} ${response.statusText}`

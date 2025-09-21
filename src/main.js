@@ -192,7 +192,7 @@ async function launchApp() {
 
   // Animation control
   let isAnimating = true;
-  window.addEventListener("keydown", (event) => {
+  window.addEventListener("keydown", async (event) => {
     if (event.key === "a" || event.key === "A") {
       // Shift-A resets the model orientation
       if (event.shiftKey) {
@@ -205,6 +205,16 @@ async function launchApp() {
       // HOME key resets camera to frame model
       const bounds = model.getBounds();
       camera.resetToModel(bounds.min, bounds.max);
+    } else if (event.key === "r" || event.key === "R") {
+      // 'R' key reloads shaders
+      try {
+        console.log("Reloading shaders...");
+        await renderer.reloadShaders();
+        console.log("Shaders reloaded successfully!");
+      } catch (error) {
+        console.error("Failed to reload shaders:", error);
+        showErrorPopup("Failed to reload shaders: " + error.message);
+      }
     }
   });
 
