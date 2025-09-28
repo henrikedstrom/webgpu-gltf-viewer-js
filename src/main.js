@@ -13,6 +13,8 @@ const environment = new Environment();
 const model = new Model();
 const renderer = new Renderer();
 
+window.debug = { camera, environment, model, renderer };
+
 let isDragging = false;
 let isPanning = false;
 let lastMouseX = 0;
