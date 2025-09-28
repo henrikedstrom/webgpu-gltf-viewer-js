@@ -35,7 +35,12 @@ export default class Renderer {
     this.height = 0;
   }
 
-  async initialize(canvas, camera, model) {
+  async initialize(canvas, camera, environment, model) {
+    // Store references to dependencies
+    this.camera = camera;
+    this.environment = environment;
+    this.model = model;
+    
     // Store canvas dimensions
     this.width = canvas.width;
     this.height = canvas.height;
@@ -64,6 +69,9 @@ export default class Renderer {
   }
 
   async updateModel(model) {
+    // Store the new model reference
+    this.model = model;
+    
     if (!model.isLoaded()) return;
 
     // Get model data
@@ -81,8 +89,20 @@ export default class Renderer {
     this.#createMaterialBindGroups(model);
   }
 
-  render(model, camera) {
-    if (!model.isLoaded()) return;
+  async updateEnvironment(environment) {
+    // Store the new environment reference
+    this.environment = environment;
+    
+    // TODO: Implement environment resource updates
+    // This will include:
+    // - Converting panorama to cubemap
+    // - Creating environment textures
+    // - Updating environment bind groups
+    console.log("Environment updated (rendering not yet implemented)");
+  }
+
+  render() {
+    if (!this.model || !this.model.isLoaded()) return;
 
     // Skip rendering if pipeline is not ready
     if (!this.pipeline) {
@@ -90,8 +110,7 @@ export default class Renderer {
       return;
     }
 
-    // Update all uniforms
-    this.#updateUniforms(model, camera);
+    this.#updateUniforms();
 
     // Get current texture
     const currentTexture = this.context.getCurrentTexture();
@@ -108,8 +127,8 @@ export default class Renderer {
     passEncoder.setPipeline(this.pipeline);
     passEncoder.setVertexBuffer(0, this.vertexBuffer);
 
-    const subMeshes = model.getSubMeshes();
-    const materials = model.getMaterials();
+    const subMeshes = this.model.getSubMeshes();
+    const materials = this.model.getMaterials();
     if (this.indices.length > 0 && subMeshes.length > 0) {
       passEncoder.setIndexBuffer(this.indexBuffer, "uint32");
       for (const sm of subMeshes) {
@@ -463,13 +482,14 @@ export default class Renderer {
     );
   }
 
-  #updateUniforms(model, camera) {
+  #updateUniforms() {
     // Prepare global uniforms data
     const globalData = new Float32Array(80); // 5 matrices * 16 floats + 4 floats for camera pos
 
-    const viewMatrix = camera.getViewMatrix();
-    const projectionMatrix = camera.getProjectionMatrix();
-    const modelMatrix = model.getTransform();
+    const viewMatrix = this.camera.getViewMatrix();
+    const modelMatrix = this.model.getTransform();
+    const projectionMatrix = this.camera.getProjectionMatrix();
+    
     // Compute normal matrix: inverse transpose of upper 3x3 of model matrix
     const modelMatrix3x3 = [
       modelMatrix[0],
@@ -520,7 +540,7 @@ export default class Renderer {
     normalMatrix[8] = normalMatrix3x3[8];
     normalMatrix[9] = normalMatrix3x3[9];
     normalMatrix[10] = normalMatrix3x3[10];
-    const cameraPos = camera.getWorldPosition();
+    const cameraPos = this.camera.getWorldPosition();
 
     // Pack matrices (each matrix is 16 floats)
     globalData.set(viewMatrix, 0); // offset 0-15

@@ -84,8 +84,8 @@ function setupDragAndDrop(canvas) {
         // Load environment
         const success = await environment.load(fileURL);
         if (success) {
-          // TODO: Update renderer with new environment (not implemented yet)
-          // await renderer.updateEnvironment(environment);
+          // Update renderer with new environment
+          await renderer.updateEnvironment(environment);
           console.log(`Successfully loaded environment: ${file.name}`);
           console.log("Note: Environment rendering not yet implemented");
         } else {
@@ -210,7 +210,7 @@ async function launchApp() {
 
   // Initialize renderer
   try {
-    await renderer.initialize(canvas, camera, model);
+    await renderer.initialize(canvas, camera, environment, model);
   } catch (error) {
     console.error("Failed to initialize renderer:", error);
     return;
@@ -259,7 +259,7 @@ async function launchApp() {
     model.update(deltaTime, isAnimating);
 
     // Render frame
-    renderer.render(model, camera);
+    renderer.render();
 
     // Continue loop
     requestAnimationFrame(frame);
