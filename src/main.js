@@ -1,6 +1,7 @@
 const { mat4, vec3 } = glMatrix;
 
 import Camera from "./Camera.js";
+import Environment from "./Environment.js";
 import Model from "./Model.js";
 import Renderer from "./Renderer.js";
 
@@ -8,6 +9,7 @@ import Renderer from "./Renderer.js";
 // Global objects
 
 const camera = new Camera();
+const environment = new Environment();
 const model = new Model();
 const renderer = new Renderer();
 
@@ -56,35 +58,49 @@ function setupDragAndDrop(canvas) {
     
     // Check file extension
     const extension = file.name.slice(file.name.lastIndexOf(".") + 1).toLowerCase();
-    if (extension !== "glb" && extension !== "gltf") {
-      showErrorPopup("Unsupported file type: " + file.name + ". Only .glb and .gltf files are supported.");
-      return;
-    }
     
     console.log(`Dropped file: ${file.name} (Size: ${file.size} bytes)`);
     
+    // Create a blob URL for the dropped file
+    const fileURL = URL.createObjectURL(file);
+    
     try {
-      // Create a blob URL for the dropped file
-      const fileURL = URL.createObjectURL(file);
-      
-      // Load the new model
-      await model.load(fileURL);
-      
-      // Reset camera to frame the new model
-      const bounds = model.getBounds();
-      camera.resetToModel(bounds.min, bounds.max);
-      
-      // Update renderer with new model
-      await renderer.updateModel(model);
-      
-      // Clean up the blob URL
-      URL.revokeObjectURL(fileURL);
-      
-      console.log(`Successfully loaded model: ${file.name}`);
+      if (extension === "glb" || extension === "gltf") {
+        // Load model
+        await model.load(fileURL);
+        
+        // Reset camera to frame the new model
+        const bounds = model.getBounds();
+        camera.resetToModel(bounds.min, bounds.max);
+        
+        // Update renderer with new model
+        await renderer.updateModel(model);
+        
+        console.log(`Successfully loaded model: ${file.name}`);
+        
+      } else if (extension === "hdr") {
+        // Load environment
+        const success = await environment.load(fileURL);
+        if (success) {
+          // TODO: Update renderer with new environment (not implemented yet)
+          // await renderer.updateEnvironment(environment);
+          console.log(`Successfully loaded environment: ${file.name}`);
+          console.log("Note: Environment rendering not yet implemented");
+        } else {
+          throw new Error("Failed to load HDR data");
+        }
+        
+      } else {
+        showErrorPopup("Unsupported file type: " + file.name + ". Supported formats: .glb, .gltf, .hdr");
+        return;
+      }
       
     } catch (error) {
-      showErrorPopup("Failed to load model: " + file.name);
-      console.error("Model loading error:", error);
+      showErrorPopup(`Failed to load ${extension.toUpperCase()} file: ${file.name}`);
+      console.error(`${extension.toUpperCase()} loading error:`, error);
+    } finally {
+      // Always clean up the blob URL
+      URL.revokeObjectURL(fileURL);
     }
   };
 }
@@ -166,6 +182,14 @@ async function launchApp() {
 
   // Setup drag-and-drop handlers
   setupDragAndDrop(canvas);
+
+  // Load environment
+  try {
+    await environment.load("./assets/environments/helipad.hdr");
+  } catch (error) {
+    console.error("Failed to load environment:", error);
+    return;
+  }
 
   // Load model
   try {
