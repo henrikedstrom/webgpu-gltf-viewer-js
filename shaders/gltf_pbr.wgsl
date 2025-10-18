@@ -4,9 +4,14 @@
 struct GlobalUniforms {
   viewMatrix: mat4x4<f32>,
   projectionMatrix: mat4x4<f32>,
-  modelMatrix: mat4x4<f32>,
-  normalMatrix: mat4x4<f32>,
+  inverseViewMatrix: mat4x4<f32>,
+  inverseProjectionMatrix: mat4x4<f32>,
   cameraPositionWorld: vec3<f32>
+};
+
+struct ModelUniforms {
+  modelMatrix: mat4x4<f32>,
+  normalMatrix: mat4x4<f32>
 };
 
 struct MaterialUniforms {
@@ -51,14 +56,20 @@ struct VertexOutput {
 //---------------------------------------------------------------------
 // Bind Groups
 
+// Global bind group (group 0) - environment and camera resources
 @group(0) @binding(0) var<uniform> globalUniforms: GlobalUniforms;
-@group(0) @binding(1) var<uniform> materialUniforms: MaterialUniforms;
-@group(0) @binding(2) var textureSampler: sampler;
-@group(0) @binding(3) var baseColorTexture: texture_2d<f32>;
-@group(0) @binding(4) var metallicRoughnessTexture: texture_2d<f32>;
-@group(0) @binding(5) var normalTexture: texture_2d<f32>;
-@group(0) @binding(6) var occlusionTexture: texture_2d<f32>;
-@group(0) @binding(7) var emissiveTexture: texture_2d<f32>;
+@group(0) @binding(1) var environmentSampler: sampler;
+@group(0) @binding(2) var environmentTexture: texture_cube<f32>;
+
+// Material bind group (group 1) - model and material resources  
+@group(1) @binding(0) var<uniform> modelUniforms: ModelUniforms;
+@group(1) @binding(1) var<uniform> materialUniforms: MaterialUniforms;
+@group(1) @binding(2) var textureSampler: sampler;
+@group(1) @binding(3) var baseColorTexture: texture_2d<f32>;
+@group(1) @binding(4) var metallicRoughnessTexture: texture_2d<f32>;
+@group(1) @binding(5) var normalTexture: texture_2d<f32>;
+@group(1) @binding(6) var occlusionTexture: texture_2d<f32>;
+@group(1) @binding(7) var emissiveTexture: texture_2d<f32>;
 
 //---------------------------------------------------------------------
 // Utility Functions
@@ -127,10 +138,10 @@ fn getNormal(input: VertexOutput) -> vec3<f32> {
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
   // Transform to world space
-  let worldPosition = globalUniforms.modelMatrix * vec4<f32>(input.position, 1.0);
-  let worldNormal = normalize((globalUniforms.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz);
+  let worldPosition = modelUniforms.modelMatrix * vec4<f32>(input.position, 1.0);
+  let worldNormal = normalize((modelUniforms.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz);
   let worldTangent = vec4<f32>(
-    normalize((globalUniforms.normalMatrix * vec4<f32>(input.tangent.xyz, 0.0)).xyz),
+    normalize((modelUniforms.normalMatrix * vec4<f32>(input.tangent.xyz, 0.0)).xyz),
     input.tangent.w
   );
   

@@ -1,4 +1,5 @@
 const { mat4 } = glMatrix;
+import { FloatType } from 'three';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 
 export default class Environment {
@@ -16,6 +17,7 @@ export default class Environment {
   async load(filename) {
     try {
       const loader = new RGBELoader();
+      loader.setDataType(FloatType); // Load as Float32Array (convert to float16 later on the GPU)
       
       const hdrData = await new Promise((resolve, reject) => {
         loader.load(filename, resolve, undefined, reject);
@@ -43,8 +45,12 @@ export default class Environment {
           rgbaData[i * 4 + 3] = 1.0; // A (full opacity)
         }
       } else {
-        // Already RGBA
-        rgbaData = textureData;
+        // Already RGBA - but ensure it's a Float32Array
+        if (textureData.constructor.name !== 'Float32Array') {
+          rgbaData = new Float32Array(textureData);
+        } else {
+          rgbaData = textureData;
+        }
       }
       
       this.m_texture.m_name = filename;

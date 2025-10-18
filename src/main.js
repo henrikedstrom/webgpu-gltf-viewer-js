@@ -87,7 +87,6 @@ function setupDragAndDrop(canvas) {
           // Update renderer with new environment
           await renderer.updateEnvironment(environment);
           console.log(`Successfully loaded environment: ${file.name}`);
-          console.log("Note: Environment rendering not yet implemented");
         } else {
           throw new Error("Failed to load HDR data");
         }
