@@ -194,11 +194,7 @@ async function launchApp() {
 
   // Load model
   try {
-    await model.load(
-      //"https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/FlightHelmet/glTF/FlightHelmet.gltf"
-      "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/SciFiHelmet/glTF/SciFiHelmet.gltf"
-      //"https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/DamagedHelmet/glTF/DamagedHelmet.gltf"
-    );
+    await model.load("./assets/models/SciFiHelmet.glb");
     // After model loads, reset camera to frame it
     const bounds = model.getBounds();
     camera.resetToModel(bounds.min, bounds.max);
