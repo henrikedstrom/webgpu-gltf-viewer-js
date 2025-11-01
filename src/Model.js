@@ -31,17 +31,23 @@ export default class Model {
 
   // Load a glTF model from URL
   async load(url) {
+    const t0 = performance.now();
     return new Promise((resolve, reject) => {
       const loader = new GLTFLoader();
       loader.load(
         url,
         (gltf) => {
+          const t1 = performance.now();
           this.#processGLTF(gltf);
+          const t2 = performance.now();
           this.m_isLoaded = true;
+          console.log(`Loaded model in ${(performance.now() - t0).toFixed(2)} ms (processing took: ${(t2 - t1).toFixed(2)} ms)`);
           resolve();
         },
         undefined,
-        (error) => reject(error)
+        (error) => {
+          reject(error);
+        }
       );
     });
   }

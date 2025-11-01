@@ -15,6 +15,8 @@ export default class Environment {
   }
 
   async load(filename) {
+    const t0 = performance.now();
+
     try {
       const loader = new RGBELoader();
       loader.setDataType(FloatType); // Load as Float32Array (convert to float16 later on the GPU)
@@ -59,7 +61,7 @@ export default class Environment {
       this.m_texture.m_components = 4; // RGBA
       this.m_texture.m_data = rgbaData;
       
-      console.log(`Loaded environment texture (${origWidth}x${origHeight})`);
+      console.log(`Loaded environment texture (${origWidth}x${origHeight}) in ${(performance.now() - t0).toFixed(2)} ms`);
       
       // Downsample if texture is larger than 4096x2048
       if (origWidth > 4096) {

@@ -96,10 +96,12 @@ export default class Renderer {
   }
 
   async updateModel(model) {
+    if (!model.isLoaded()) return;
+
+    const t0 = performance.now();
+   
     // Store the new model reference
     this.model = model;
-    
-    if (!model.isLoaded()) return;
 
     // Get model data
     this.vertexData = model.getVertices();
@@ -114,18 +116,21 @@ export default class Renderer {
     // Load model textures then build per-material bind groups
     await this.#loadModelTextures(model);
     this.#createMaterialBindGroups(model);
+
+    console.log(`Updated Model WebGPU resources in ${(performance.now() - t0).toFixed(2)} ms`);
   }
 
   async updateEnvironment(environment) {
-    // Store the new environment reference
-    this.environment = environment;
-    
     if (!environment || !environment.getTexture().m_data) {
       console.warn("No environment data to process");
       return;
     }
+    // Store the new environment reference
+    this.environment = environment;
 
     try {
+      const t0 = performance.now();
+
       // Create environment textures and convert panorama to cubemap
       await this.#createEnvironmentTexturesAndSamplers();
       
@@ -135,7 +140,7 @@ export default class Renderer {
       // Create global bind group with environment resources
       this.#createGlobalBindGroup();
       
-      console.log("Environment updated successfully");
+      console.log(`Updated Environment WebGPU resources in ${(performance.now() - t0).toFixed(2)} ms`);
     } catch (error) {
       console.error("Failed to update environment:", error);
       throw error;
@@ -376,8 +381,6 @@ export default class Renderer {
     
     // Create environment sampler
     this.environmentCubeSampler = this.#createEnvironmentSampler();
-    
-    console.log(`Environment cubemap created: ${environmentCubeSize}x${environmentCubeSize}`);
   }
 
   // Create environment rendering pipeline
@@ -451,7 +454,6 @@ export default class Renderer {
         },
       });
 
-      console.log("Environment pipeline created successfully");
     } catch (error) {
       console.error("Failed to create environment pipeline:", error);
       throw error;
