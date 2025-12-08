@@ -1,5 +1,6 @@
 const { mat4 } = glMatrix;
 import PanoramaToCubemapConverter from './PanoramaToCubemapConverter.js';
+import MipmapGenerator, { MipKind } from './MipmapGenerator.js';
 
 export default class Renderer {
   constructor() {
@@ -31,6 +32,7 @@ export default class Renderer {
     this.environmentBindGroupLayout = null;
     this.environmentBindGroup = null;
     this.panoramaConverter = null;
+    this.mipmapGenerator = null;
 
     // Bind group layouts
     this.globalBindGroupLayout = null;
@@ -70,6 +72,7 @@ export default class Renderer {
     this.#createDepthTexture();
 
     // Create resources first
+    this.mipmapGenerator = new MipmapGenerator(this.device);
     this.#createDefaultTexture();
     this.#createDefaultCubeTexture();
     this.#createSampler();
@@ -366,8 +369,8 @@ export default class Renderer {
     // Calculate environment cubemap size (power of 2, based on panorama width)
     const environmentCubeSize = this.#floorPow2(panoramaTexture.m_width);
     
-    // Create environment cubemap texture (no mipmaps for now since we're skipping mipmap generation)
-    const envResult = this.#createEnvironmentTexture([environmentCubeSize, environmentCubeSize, 6], false);
+    // Create environment cubemap texture with mipmaps
+    const envResult = this.#createEnvironmentTexture([environmentCubeSize, environmentCubeSize, 6], true);
     this.environmentTexture = envResult.texture;
     this.environmentTextureView = envResult.textureView;
     
@@ -378,6 +381,13 @@ export default class Renderer {
     
     // Convert panorama to cubemap
     await this.panoramaConverter.uploadAndConvert(panoramaTexture, this.environmentTexture);
+    
+    // Generate mipmaps for the environment cubemap
+    await this.mipmapGenerator.generateMipmaps(
+      this.environmentTexture,
+      { width: environmentCubeSize, height: environmentCubeSize },
+      MipKind.Float16Cube
+    );
     
     // Create environment sampler
     this.environmentCubeSampler = this.#createEnvironmentSampler();
@@ -436,12 +446,12 @@ export default class Renderer {
         layout: pipelineLayout,
         vertex: {
           module: this.environmentShaderModule,
-          entryPoint: "vertexMain",
+          entryPoint: "vs_main",
           // No vertex buffers - vertices generated in shader
         },
         fragment: {
           module: this.environmentShaderModule,
-          entryPoint: "fragmentMain",
+          entryPoint: "fs_main",
           targets: [{ format: this.format }],
         },
         primitive: {
@@ -516,7 +526,7 @@ export default class Renderer {
     this.pipeline = this.device.createRenderPipeline({
       vertex: {
         module: shaderModule,
-        entryPoint: "vertexMain",
+        entryPoint: "vs_main",
         buffers: [
           {
             arrayStride: 18 * Float32Array.BYTES_PER_ELEMENT, // Full vertex: 18 floats
@@ -557,7 +567,7 @@ export default class Renderer {
       },
       fragment: {
         module: shaderModule,
-        entryPoint: "fragmentMain",
+        entryPoint: "fs_main",
         targets: [{ format: this.format }],
       },
       primitive: {
@@ -673,32 +683,96 @@ export default class Renderer {
 
     for (const texture of textures) {
       if (texture.image) {
-        // Determine correct format based on texture type
-        // Color textures (baseColor, emissive) need sRGB format
-        // Data textures (normal, metallic-roughness, occlusion) need linear format
-        const needsSrgb = texture.type === "baseColor" || texture.type === "emissive";
-        const format = needsSrgb ? "rgba8unorm-srgb" : "rgba8unorm";
-        
-        // Create WebGPU texture from HTML Image
-        const webgpuTexture = this.device.createTexture({
-          size: [texture.width, texture.height, 1],
-          format: format,
-          usage:
-            GPUTextureUsage.TEXTURE_BINDING |
-            GPUTextureUsage.COPY_DST |
-            GPUTextureUsage.RENDER_ATTACHMENT,
-        });
-
-        // Copy image data to WebGPU texture
-        this.device.queue.copyExternalImageToTexture(
-          { source: texture.image },
-          { texture: webgpuTexture },
-          [texture.width, texture.height]
-        );
-
+        const webgpuTexture = await this.#createModelTexture(texture);
         this.modelTextures.push(webgpuTexture);
-        this.modelTextureTypes.push(texture.type); // Track texture type
+        this.modelTextureTypes.push(texture.type);
       }
+    }
+  }
+
+  /**
+   * @brief Create a model texture with mipmaps using the appropriate MipKind.
+   * @param {Object} texture - Texture info with image, width, height, and type.
+   * @returns {Promise<GPUTexture>} The created WebGPU texture with mipmaps.
+   * @private
+   */
+  async #createModelTexture(texture) {
+    const { image, width, height, type } = texture;
+
+    // Calculate mip level count
+    const mipLevelCount = 1 + Math.floor(Math.log2(Math.max(width, height)));
+
+    // Determine format and mip kind based on texture type
+    const needsSrgb = type === "baseColor" || type === "emissive";
+    const isNormal = type === "normal";
+    
+    let mipKind;
+    if (needsSrgb) {
+      mipKind = MipKind.SRGB2D;
+    } else if (isNormal) {
+      mipKind = MipKind.Normal2D;
+    } else {
+      mipKind = MipKind.LinearUNorm2D;
+    }
+
+    if (mipKind === MipKind.SRGB2D) {
+      // sRGB textures: create directly with render attachment usage for render-based mipmaps
+      const finalTexture = this.device.createTexture({
+        size: [width, height, 1],
+        format: 'rgba8unorm-srgb',
+        usage: GPUTextureUsage.TEXTURE_BINDING | 
+               GPUTextureUsage.RENDER_ATTACHMENT | 
+               GPUTextureUsage.COPY_DST,
+        mipLevelCount,
+      });
+
+      // Upload level 0
+      this.device.queue.copyExternalImageToTexture(
+        { source: image },
+        { texture: finalTexture },
+        [width, height]
+      );
+
+      // Generate mipmaps via render path
+      await this.mipmapGenerator.generateMipmaps(
+        finalTexture,
+        { width, height },
+        MipKind.SRGB2D
+      );
+
+      return finalTexture;
+    } else {
+      // Non-sRGB textures: use compute-based mipmaps via intermediate texture
+      // Create intermediate RGBA8Unorm texture with storage binding for compute mipmaps
+      // Note: RENDER_ATTACHMENT is required for copyExternalImageToTexture
+      const intermediateTexture = this.device.createTexture({
+        size: [width, height, 1],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | 
+               GPUTextureUsage.STORAGE_BINDING | 
+               GPUTextureUsage.COPY_DST | 
+               GPUTextureUsage.COPY_SRC |
+               GPUTextureUsage.RENDER_ATTACHMENT,
+        mipLevelCount,
+      });
+
+      // Upload level 0
+      this.device.queue.copyExternalImageToTexture(
+        { source: image },
+        { texture: intermediateTexture },
+        [width, height]
+      );
+
+      // Generate mipmaps via compute (normal-aware or linear)
+      await this.mipmapGenerator.generateMipmaps(
+        intermediateTexture,
+        { width, height },
+        mipKind
+      );
+
+      // For non-sRGB data textures, we can use the intermediate directly
+      // since the final format is also rgba8unorm
+      return intermediateTexture;
     }
   }
 

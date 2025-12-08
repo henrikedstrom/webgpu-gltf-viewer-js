@@ -136,7 +136,7 @@ fn getNormal(input: VertexOutput) -> vec3<f32> {
 // Vertex Shader
 
 @vertex
-fn vertexMain(input: VertexInput) -> VertexOutput {
+fn vs_main(input: VertexInput) -> VertexOutput {
   // Transform to world space
   let worldPosition = modelUniforms.modelMatrix * vec4<f32>(input.position, 1.0);
   let worldNormal = normalize((modelUniforms.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz);
@@ -159,7 +159,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 // Fragment Shader
 
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   // Sample textures
   let baseColor = textureSample(baseColorTexture, textureSampler, input.texCoord0) * materialUniforms.baseColorFactor;
   let metallicRoughness = textureSample(metallicRoughnessTexture, textureSampler, input.texCoord0);
