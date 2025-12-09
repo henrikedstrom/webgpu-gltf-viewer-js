@@ -29,8 +29,6 @@ export default class Renderer {
     this.environmentCubeSampler = null;
     this.environmentShaderModule = null;
     this.environmentPipeline = null;
-    this.environmentBindGroupLayout = null;
-    this.environmentBindGroup = null;
     this.panoramaConverter = null;
     this.mipmapGenerator = null;
 
@@ -173,10 +171,10 @@ export default class Renderer {
     );
 
     // Render environment background first
-    if (this.environmentPipeline && this.environmentBindGroup) {
+    if (this.environmentPipeline && this.globalBindGroup) {
       passEncoder.setPipeline(this.environmentPipeline);
-      passEncoder.setBindGroup(0, this.environmentBindGroup);
-      passEncoder.draw(6, 1, 0, 0); // 6 vertices for fullscreen quad (two triangles)
+      passEncoder.setBindGroup(0, this.globalBindGroup);
+      passEncoder.draw(3, 1, 0, 0); // 3 vertices for fullscreen triangle
     }
 
     // Issue drawing commands (per submesh with material)
@@ -402,43 +400,9 @@ export default class Renderer {
         code: shaderCode 
       });
 
-      // Create environment-specific bind group layout
-      this.environmentBindGroupLayout = this.device.createBindGroupLayout({
-        entries: [
-          {
-            binding: 0,
-            visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
-            buffer: { type: "uniform" },
-          }, // Global uniforms (camera matrices)
-          {
-            binding: 1,
-            visibility: GPUShaderStage.FRAGMENT,
-            sampler: { type: 'filtering' }
-          }, // Environment sampler
-          {
-            binding: 2,
-            visibility: GPUShaderStage.FRAGMENT,
-            texture: { 
-              sampleType: 'float',
-              viewDimension: 'cube'
-            }
-          }, // Environment cubemap
-        ],
-      });
-
-      // Create environment bind group
-      this.environmentBindGroup = this.device.createBindGroup({
-        layout: this.environmentBindGroupLayout,
-        entries: [
-          { binding: 0, resource: { buffer: this.globalUniformBuffer } }, // Camera matrices only
-          { binding: 1, resource: this.environmentCubeSampler },
-          { binding: 2, resource: this.environmentTextureView },
-        ],
-      });
-
-      // Create pipeline layout with environment bind group layout
+      // Create pipeline layout using the shared global bind group layout
       const pipelineLayout = this.device.createPipelineLayout({
-        bindGroupLayouts: [this.environmentBindGroupLayout],
+        bindGroupLayouts: [this.globalBindGroupLayout],
       });
 
       // Create environment render pipeline
