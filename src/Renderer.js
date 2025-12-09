@@ -48,9 +48,6 @@ export default class Renderer {
     // Render pass descriptor
     this.renderPassDescriptor = null;
 
-    // Canvas dimensions
-    this.width = 0;
-    this.height = 0;
   }
 
   async initialize(canvas, camera, environment, model) {
@@ -58,42 +55,29 @@ export default class Renderer {
     this.camera = camera;
     this.environment = environment;
     this.model = model;
-    
-    // Store canvas dimensions
-    this.width = canvas.width;
-    this.height = canvas.height;
 
     // Initialize WebGPU
     await this.#initWebGPU(canvas);
 
-    // Create depth buffer
-    this.#createDepthTexture();
+    this.#createDepthTexture(canvas.width, canvas.height);
 
-    // Create resources first
+    this.#createBindGroupLayouts();
+
+    this.#createSamplers();
+
+    this.#createRenderPassDescriptor();
+
     this.mipmapGenerator = new MipmapGenerator(this.device);
-    this.#createDefaultTexture();
-    this.#createDefaultCubeTexture();
-    this.#createSampler();
+    this.#createDefaultTextures();
+    
+    await this.#createModelRenderPipelines();
+    await this.#createEnvironmentRenderPipeline();
 
-    // Create rendering pipeline
-    await this.#createPipeline();
-
-    // Create uniform buffers (after pipeline, so we can create bind groups)
     this.#createUniformBuffers();
 
-    // Create environment resources
     await this.updateEnvironment(environment);
     
-    // Create initial global bind group
-    if (!this.globalBindGroup) {
-      this.#createGlobalBindGroup();
-    }
-
-    // Setup model resources
     await this.updateModel(model);
-
-    // Create render pass descriptor
-    this.#createRenderPassDescriptor();
   }
 
   async updateModel(model) {
@@ -135,9 +119,6 @@ export default class Renderer {
       // Create environment textures and convert panorama to cubemap
       await this.#createEnvironmentTexturesAndSamplers();
       
-      // Create environment rendering pipeline
-      await this.#createEnvironmentPipeline();
-      
       // Create global bind group with environment resources
       this.#createGlobalBindGroup();
       
@@ -175,7 +156,7 @@ export default class Renderer {
     
     // Render environment background first
     pass.setPipeline(this.environmentPipeline);
-    pass.draw(3, 1, 0, 0); // 3 vertices for fullscreen triangle
+    pass.draw(3, 1, 0, 0); // Fullscreen triangle
     
     // Set up vertex and index buffers
     pass.setVertexBuffer(0, this.vertexBuffer);
@@ -189,6 +170,7 @@ export default class Renderer {
       pass.drawIndexed(sm.indexCount, 1, sm.firstIndex, 0, 0);
     }
 
+    // End the pass
     pass.end();
 
     // Submit commands
@@ -196,11 +178,8 @@ export default class Renderer {
   }
 
   resize(width, height) {
-    this.width = width;
-    this.height = height;
-
     // Recreate depth texture with new size
-    this.#createDepthTexture();
+    this.#createDepthTexture(width, height);
 
     // Update render pass descriptor
     this.renderPassDescriptor.depthStencilAttachment.view =
@@ -356,11 +335,13 @@ export default class Renderer {
     );
     
     // Create environment sampler
-    this.environmentCubeSampler = this.#createEnvironmentSampler();
+    if (!this.environmentCubeSampler) {
+      this.environmentCubeSampler = this.#createEnvironmentSampler();
+    }
   }
 
   // Create environment rendering pipeline
-  async #createEnvironmentPipeline() {
+  async #createEnvironmentRenderPipeline() {
     try {
       // Load environment shader
       const shaderCode = await this.#loadShaderFile("./shaders/environment.wgsl");
@@ -392,7 +373,7 @@ export default class Renderer {
         depthStencil: {
           format: "depth24plus",
           depthWriteEnabled: false, // Don't write depth for environment background
-          depthCompare: "less-equal", // Render at far plane
+          depthCompare: "less-equal",
         },
       });
 
@@ -425,13 +406,13 @@ export default class Renderer {
     });
   }
 
-  #createDepthTexture() {
+  #createDepthTexture(width, height) {
     if (this.depthTexture) {
       this.depthTexture.destroy();
     }
 
     this.depthTexture = this.device.createTexture({
-      size: [this.width, this.height, 1],
+      size: [width, height, 1],
       format: "depth24plus",
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
@@ -439,15 +420,12 @@ export default class Renderer {
     this.depthTextureView = this.depthTexture.createView();
   }
 
-  async #createPipeline() {
+  async #createModelRenderPipelines() {
     // Load shader code from file
     const shaderCode = await this.#loadShaderFile("./shaders/gltf_pbr.wgsl");
 
     // Create shader module
     const shaderModule = this.device.createShaderModule({ code: shaderCode });
-
-    // Create separate bind group layouts
-    this.#createBindGroupLayouts();
 
     // Create pipeline layout
     const pipelineLayout = this.device.createPipelineLayout({
@@ -699,30 +677,7 @@ export default class Renderer {
     }
   }
 
-  #createDefaultCubeTexture() {
-    // Create a 1x1x6 white cube texture as default for environment
-    this.defaultCubeTexture = this.device.createTexture({
-      size: [1, 1, 6],
-      format: "rgba8unorm",
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-
-    // Write white pixel data to all 6 faces
-    const whitePixel = new Uint8Array([255, 255, 255, 255]);
-    for (let face = 0; face < 6; face++) {
-      this.device.queue.writeTexture(
-        { 
-          texture: this.defaultCubeTexture,
-          origin: { x: 0, y: 0, z: face }
-        },
-        whitePixel,
-        { bytesPerRow: 4 },
-        { width: 1, height: 1, depthOrArrayLayers: 1 }
-      );
-    }
-  }
-
-  #createSampler() {
+  #createSamplers() {
     this.sampler = this.device.createSampler({
       magFilter: "linear",
       minFilter: "linear",
@@ -732,38 +687,56 @@ export default class Renderer {
     });
   }
 
-  #createDefaultTexture() {
-    // Create a 1x1 white texture as default for base color (sRGB format)
-    this.defaultTexture = this.device.createTexture({
-      size: [1, 1, 1],
-      format: "rgba8unorm-srgb",
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
+  #createDefaultTextures() {
+    // 1x1 white sRGB texture (base color/emissive default)
+    {
+      this.defaultTexture = this.device.createTexture({
+        size: [1, 1, 1],
+        format: "rgba8unorm-srgb",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      const whitePixel = new Uint8Array([255, 255, 255, 255]);
+      this.device.queue.writeTexture(
+        { texture: this.defaultTexture },
+        whitePixel,
+        { bytesPerRow: 4 },
+        { width: 1, height: 1 }
+      );
+    }
 
-    // Write white pixel data
-    const whitePixel = new Uint8Array([255, 255, 255, 255]);
-    this.device.queue.writeTexture(
-      { texture: this.defaultTexture },
-      whitePixel,
-      { bytesPerRow: 4 },
-      { width: 1, height: 1 }
-    );
+    // 1x1 UNORM flat normal texture (normal default)
+    {
+      this.defaultNormalTexture = this.device.createTexture({
+        size: [1, 1, 1],
+        format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      const flatNormal = new Uint8Array([128, 128, 255, 255]);
+      this.device.queue.writeTexture(
+        { texture: this.defaultNormalTexture },
+        flatNormal,
+        { bytesPerRow: 4 },
+        { width: 1, height: 1 }
+      );
+    }
 
-    // Create a 1x1 "flat" normal texture (128, 128, 255, 255 = [0, 0, 1] in tangent space)
-    this.defaultNormalTexture = this.device.createTexture({
-      size: [1, 1, 1],
-      format: "rgba8unorm",
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-
-    // Write flat normal data (pointing straight up in tangent space)
-    const flatNormal = new Uint8Array([128, 128, 255, 255]); // [0.5, 0.5, 1.0, 1.0] in [0,1] range
-    this.device.queue.writeTexture(
-      { texture: this.defaultNormalTexture },
-      flatNormal,
-      { bytesPerRow: 4 },
-      { width: 1, height: 1 }
-    );
+    // 1x1x6 white cube texture (environment fallback)
+    {
+      this.defaultCubeTexture = this.device.createTexture({
+        size: [1, 1, 6],
+        format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      const whitePixel = new Uint8Array([255, 255, 255, 255]);
+      for (let face = 0; face < 6; face++) {
+        this.device.queue.writeTexture(
+          { texture: this.defaultCubeTexture, origin: { x: 0, y: 0, z: face } },
+          whitePixel,
+          { bytesPerRow: 4 },
+          { width: 1, height: 1, depthOrArrayLayers: 1 }
+        );
+      }
+    }
   }
 
   #updateUniforms() {
@@ -903,28 +876,36 @@ export default class Renderer {
   // Reload shaders from disk
   async reloadShaders() {
     console.log("Destroying existing shader resources...");
-    
-    // Store references to current pipeline in case reload fails
-    const oldPipeline = this.pipeline;
-    const oldShaderModule = this.shaderModule;
-    
+
+    // Store references to current pipelines in case reload fails
+    const oldModelPipeline = this.pipeline;
+    const oldEnvPipeline = this.environmentPipeline;
+    const oldModelShaderModule = this.shaderModule;
+    const oldEnvShaderModule = this.environmentShaderModule;
+
     try {
       // Clear current pipeline and shader module
       this.pipeline = null;
+      this.environmentPipeline = null;
       this.shaderModule = null;
-      
+      this.environmentShaderModule = null;
+
       console.log("Loading shader from disk...");
       
-      // Recreate the pipeline with fresh shader code
-      await this.#createPipeline();
+      // Recreate the model pipeline with new shader code
+      await this.#createModelRenderPipelines();
+      // Recreate the environment pipeline with new shader code
+      await this.#createEnvironmentRenderPipeline();
       
       console.log("Shader pipeline recreated successfully!");
     } catch (error) {
       console.error("Failed to reload shaders, restoring previous pipeline:", error);
       
-      // Restore previous pipeline if reload failed
-      this.pipeline = oldPipeline;
-      this.shaderModule = oldShaderModule;
+      // Restore previous pipelines if reload failed
+      this.pipeline = oldModelPipeline;
+      this.environmentPipeline = oldEnvPipeline;
+      this.shaderModule = oldModelShaderModule;
+      this.environmentShaderModule = oldEnvShaderModule;
       
       throw error; // Re-throw so caller knows it failed
     }
