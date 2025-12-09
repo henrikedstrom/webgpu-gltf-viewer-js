@@ -598,15 +598,6 @@ export default class Renderer {
     }
   }
 
-  #findTextureByType(type) {
-    for (let i = 0; i < this.modelTextures.length; i++) {
-      if (this.modelTextureTypes[i] === type) {
-        return this.modelTextures[i];
-      }
-    }
-    return null;
-  }
-
   async #loadModelTextures(model) {
     this.modelTextures = [];
     this.modelTextureTypes = [];
