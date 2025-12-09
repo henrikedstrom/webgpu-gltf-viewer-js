@@ -165,66 +165,34 @@ export default class Renderer {
       currentTexture.createView();
 
     // Create command encoder and render pass
-    const commandEncoder = this.device.createCommandEncoder();
-    const passEncoder = commandEncoder.beginRenderPass(
+    const encoder = this.device.createCommandEncoder();
+    const pass = encoder.beginRenderPass(
       this.renderPassDescriptor
     );
 
-    // Render environment background first
-    if (this.environmentPipeline && this.globalBindGroup) {
-      passEncoder.setPipeline(this.environmentPipeline);
-      passEncoder.setBindGroup(0, this.globalBindGroup);
-      passEncoder.draw(3, 1, 0, 0); // 3 vertices for fullscreen triangle
-    }
-
-    // Issue drawing commands (per submesh with material)
-    passEncoder.setPipeline(this.pipeline);
-    passEncoder.setVertexBuffer(0, this.vertexBuffer);
-
     // Set global bind group (group 0)
-    if (this.globalBindGroup) {
-      passEncoder.setBindGroup(0, this.globalBindGroup);
-    }
+    pass.setBindGroup(0, this.globalBindGroup);
+    
+    // Render environment background first
+    pass.setPipeline(this.environmentPipeline);
+    pass.draw(3, 1, 0, 0); // 3 vertices for fullscreen triangle
+    
+    // Set up vertex and index buffers
+    pass.setVertexBuffer(0, this.vertexBuffer);
+    pass.setIndexBuffer(this.indexBuffer, "uint32");
 
+    // Draw opaque submeshes
+    pass.setPipeline(this.pipeline);
     const subMeshes = this.model.getSubMeshes();
-    const materials = this.model.getMaterials();
-    if (this.indices.length > 0 && subMeshes.length > 0) {
-      passEncoder.setIndexBuffer(this.indexBuffer, "uint32");
-      for (const sm of subMeshes) {
-        const matIndex =
-          sm.materialIndex >= 0 &&
-          sm.materialIndex < this.materialBindGroups.length
-            ? sm.materialIndex
-            : 0;
-        const bg = this.materialBindGroups[matIndex];
-        if (!bg) {
-          console.warn("Missing bind group for material", matIndex);
-          continue;
-        }
-        passEncoder.setBindGroup(1, bg); // Material bind group
-        passEncoder.drawIndexed(sm.indexCount, 1, sm.firstIndex, 0, 0);
-      }
-    } else if (this.indices.length > 0) {
-      passEncoder.setIndexBuffer(this.indexBuffer, "uint32");
-      if (!this.materialBindGroups[0]) {
-        console.warn("No material bind groups");
-        return;
-      }
-      passEncoder.setBindGroup(1, this.materialBindGroups[0]); // Material bind group
-      passEncoder.drawIndexed(this.indices.length);
-    } else {
-      if (!this.materialBindGroups[0]) {
-        console.warn("No material bind groups");
-        return;
-      }
-      passEncoder.setBindGroup(1, this.materialBindGroups[0]); // Material bind group
-      passEncoder.draw(this.vertexData.length / 18);
+    for (const sm of subMeshes) {
+      pass.setBindGroup(1, this.materialBindGroups[sm.materialIndex]);
+      pass.drawIndexed(sm.indexCount, 1, sm.firstIndex, 0, 0);
     }
 
-    passEncoder.end();
+    pass.end();
 
     // Submit commands
-    this.device.queue.submit([commandEncoder.finish()]);
+    this.device.queue.submit([encoder.finish()]);
   }
 
   resize(width, height) {
