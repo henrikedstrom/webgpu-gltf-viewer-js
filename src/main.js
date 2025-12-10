@@ -194,7 +194,7 @@ async function launchApp() {
 
   // Load model
   try {
-    await model.load("./assets/models/SciFiHelmet.glb");
+    await model.load("./assets/models/DamagedHelmet.glb");
     // After model loads, reset camera to frame it
     const bounds = model.getBounds();
     camera.resetToModel(bounds.min, bounds.max);
