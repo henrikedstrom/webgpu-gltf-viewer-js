@@ -218,5 +218,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
   var color = finalColor / (finalColor + vec3<f32>(1.0));
   color = pow(color, vec3<f32>(1.0/2.2));
 
-  return vec4<f32>(color, baseColor.a);
+  // Select alpha: Opaque forces 1.0, Mask/Blend use factored alpha (baseColor.a)
+  var alpha = select(baseColor.a, 1.0, alphaMode == 0.0);
+  return vec4<f32>(color, alpha);
 }

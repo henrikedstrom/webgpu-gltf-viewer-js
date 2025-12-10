@@ -1,4 +1,4 @@
-const { mat4 } = glMatrix;
+const { mat4, vec4 } = glMatrix;
 import PanoramaToCubemapConverter from './PanoramaToCubemapConverter.js';
 import MipmapGenerator, { MipKind } from './MipmapGenerator.js';
 
@@ -12,18 +12,19 @@ export default class Renderer {
     // Rendering resources
     this.depthTexture = null;
     this.depthTextureView = null;
-    this.pipeline = null;
+    this.renderPassDescriptor = null;
     this.globalUniformBuffer = null;
     this.modelUniformBuffer = null;
     this.sampler = null;
-    this.defaultTexture = null;
+    this.defaultSRGBTexture = null;
+    this.defaultUNormTexture = null;
     this.defaultNormalTexture = null;
     this.defaultCubeTexture = null;
     // Per-material resources
     this.materialBindGroups = []; // bind group per material
     this.materialUniformBuffers = []; // uniform buffer per material
 
-    // Environment resources
+    // Environment and IBL related data
     this.environmentTexture = null;
     this.environmentTextureView = null;
     this.environmentCubeSampler = null;
@@ -45,9 +46,14 @@ export default class Renderer {
     this.modelTextures = [];
     this.modelTextureTypes = [];
 
-    // Render pass descriptor
-    this.renderPassDescriptor = null;
+    // Model pipelines
+    this.modelPipelineOpaque = null;
+    this.modelPipelineTransparent = null;
 
+    // Meshes
+    this.opaqueMeshes = [];
+    this.transparentMeshes = [];
+    this.transparentMeshesDepthSorted = [];
   }
 
   async initialize(canvas, camera, environment, model) {
@@ -102,6 +108,9 @@ export default class Renderer {
     await this.#loadModelTextures(model);
     this.#createMaterialBindGroups(model);
 
+    // Build opaque/transparent mesh lists
+    this.#createSubMeshes(model);
+
     console.log(`Updated Model WebGPU resources in ${(performance.now() - t0).toFixed(2)} ms`);
   }
 
@@ -117,7 +126,7 @@ export default class Renderer {
       const t0 = performance.now();
 
       // Create environment textures and convert panorama to cubemap
-      await this.#createEnvironmentTexturesAndSamplers();
+      await this.#createEnvironmentTextures();
       
       // Create global bind group with environment resources
       this.#createGlobalBindGroup();
@@ -133,12 +142,18 @@ export default class Renderer {
     if (!this.model || !this.model.isLoaded()) return;
 
     // Skip rendering if pipeline is not ready
-    if (!this.pipeline) {
-      console.warn("Pipeline not ready, skipping render");
+    if (!this.environmentPipeline) {
+      console.warn("Environment pipeline not ready, skipping render");
+      return;
+    }
+    if (!this.modelPipelineOpaque || !this.modelPipelineTransparent) {
+      console.warn("Model pipelines not ready, skipping render");
       return;
     }
 
+    // Update view dependent data
     this.#updateUniforms();
+    this.#sortTransparentMeshes(this.model.getTransform(), this.camera.getViewMatrix());
 
     // Get current texture
     const currentTexture = this.context.getCurrentTexture();
@@ -163,9 +178,16 @@ export default class Renderer {
     pass.setIndexBuffer(this.indexBuffer, "uint32");
 
     // Draw opaque submeshes
-    pass.setPipeline(this.pipeline);
-    const subMeshes = this.model.getSubMeshes();
-    for (const sm of subMeshes) {
+    pass.setPipeline(this.modelPipelineOpaque);
+    for (const sm of this.opaqueMeshes) {
+      pass.setBindGroup(1, this.materialBindGroups[sm.materialIndex]);
+      pass.drawIndexed(sm.indexCount, 1, sm.firstIndex, 0, 0);
+    }
+
+    // Draw transparent submeshes back-to-front
+    pass.setPipeline(this.modelPipelineTransparent);
+    for (const depthInfo of this.transparentMeshesDepthSorted) {
+      const sm = this.transparentMeshes[depthInfo.meshIndex];
       pass.setBindGroup(1, this.materialBindGroups[sm.materialIndex]);
       pass.drawIndexed(sm.indexCount, 1, sm.firstIndex, 0, 0);
     }
@@ -307,7 +329,7 @@ export default class Renderer {
   }
 
   // Create environment textures and samplers
-  async #createEnvironmentTexturesAndSamplers() {
+  async #createEnvironmentTextures() {
     // Get panorama texture from environment
     const panoramaTexture = this.environment.getTexture();
     
@@ -371,7 +393,7 @@ export default class Renderer {
           topology: "triangle-list",
         },
         depthStencil: {
-          format: "depth24plus",
+          format: "depth24plus-stencil8",
           depthWriteEnabled: false, // Don't write depth for environment background
           depthCompare: "less-equal",
         },
@@ -413,7 +435,7 @@ export default class Renderer {
 
     this.depthTexture = this.device.createTexture({
       size: [width, height, 1],
-      format: "depth24plus",
+      format: "depth24plus-stencil8",
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
 
@@ -432,61 +454,62 @@ export default class Renderer {
       bindGroupLayouts: [this.globalBindGroupLayout, this.materialBindGroupLayout],
     });
 
-    // Create render pipeline
-    this.pipeline = this.device.createRenderPipeline({
-      vertex: {
-        module: shaderModule,
-        entryPoint: "vs_main",
-        buffers: [
-          {
-            arrayStride: 18 * Float32Array.BYTES_PER_ELEMENT, // Full vertex: 18 floats
-            attributes: [
-              {
-                shaderLocation: 0, // Position
-                format: "float32x3",
-                offset: 0,
-              },
-              {
-                shaderLocation: 1, // Normal
-                format: "float32x3",
-                offset: 3 * Float32Array.BYTES_PER_ELEMENT,
-              },
-              {
-                shaderLocation: 2, // Tangent
-                format: "float32x4",
-                offset: 6 * Float32Array.BYTES_PER_ELEMENT,
-              },
-              {
-                shaderLocation: 3, // TexCoord0
-                format: "float32x2",
-                offset: 10 * Float32Array.BYTES_PER_ELEMENT,
-              },
-              {
-                shaderLocation: 4, // TexCoord1
-                format: "float32x2",
-                offset: 12 * Float32Array.BYTES_PER_ELEMENT,
-              },
-              {
-                shaderLocation: 5, // Color
-                format: "float32x4",
-                offset: 14 * Float32Array.BYTES_PER_ELEMENT,
-              },
-            ],
-          },
-        ],
-      },
+    // Base vertex state
+    const vertexState = {
+      module: shaderModule,
+      entryPoint: "vs_main",
+      buffers: [
+        {
+          arrayStride: 18 * Float32Array.BYTES_PER_ELEMENT, // Full vertex: 18 floats
+          attributes: [
+            { shaderLocation: 0, format: "float32x3", offset: 0 }, // Position
+            { shaderLocation: 1, format: "float32x3", offset: 3 * Float32Array.BYTES_PER_ELEMENT }, // Normal
+            { shaderLocation: 2, format: "float32x4", offset: 6 * Float32Array.BYTES_PER_ELEMENT }, // Tangent
+            { shaderLocation: 3, format: "float32x2", offset: 10 * Float32Array.BYTES_PER_ELEMENT }, // TexCoord0
+            { shaderLocation: 4, format: "float32x2", offset: 12 * Float32Array.BYTES_PER_ELEMENT }, // TexCoord1
+            { shaderLocation: 5, format: "float32x4", offset: 14 * Float32Array.BYTES_PER_ELEMENT }, // Color
+          ],
+        },
+      ],
+    };
+
+    // Opaque pipeline
+    this.modelPipelineOpaque = this.device.createRenderPipeline({
+      vertex: vertexState,
       fragment: {
         module: shaderModule,
         entryPoint: "fs_main",
         targets: [{ format: this.format }],
       },
-      primitive: {
-        topology: "triangle-list",
-      },
+      primitive: { topology: "triangle-list" },
       depthStencil: {
-        format: "depth24plus",
+        format: "depth24plus-stencil8",
         depthWriteEnabled: true,
-        depthCompare: "less",
+        depthCompare: "less-equal",
+      },
+      layout: pipelineLayout,
+    });
+
+    // Transparent pipeline (alpha blending, no depth writes)
+    const blendComponent = {
+      operation: "add",
+      srcFactor: "src-alpha",
+      dstFactor: "one-minus-src-alpha",
+    };
+    const blendState = { color: blendComponent, alpha: blendComponent };
+
+    this.modelPipelineTransparent = this.device.createRenderPipeline({
+      vertex: vertexState,
+      fragment: {
+        module: shaderModule,
+        entryPoint: "fs_main",
+        targets: [{ format: this.format, blend: blendState }],
+      },
+      primitive: { topology: "triangle-list" },
+      depthStencil: {
+        format: "depth24plus-stencil8",
+        depthWriteEnabled: false,
+        depthCompare: "less-equal",
       },
       layout: pipelineLayout,
     });
@@ -522,7 +545,8 @@ export default class Renderer {
         return this.modelTextures[idx];
       }
       if (kind === "normal") return this.defaultNormalTexture;
-      return this.defaultTexture;
+      if (kind === "metallicRoughness" || kind === "occlusion") return this.defaultUNormTexture;
+      return this.defaultSRGBTexture;
     };
 
     for (let i = 0; i < materials.length; i++) {
@@ -671,9 +695,27 @@ export default class Renderer {
         mipKind
       );
 
-      // For non-sRGB data textures, we can use the intermediate directly
-      // since the final format is also rgba8unorm
-      return intermediateTexture;
+      // Copy into a final texture without STORAGE usage for sampling
+      const finalTexture = this.device.createTexture({
+        size: [width, height, 1],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+        mipLevelCount,
+      });
+
+      const encoder = this.device.createCommandEncoder();
+      for (let level = 0; level < mipLevelCount; level++) {
+        const mipWidth = Math.max(width >> level, 1);
+        const mipHeight = Math.max(height >> level, 1);
+        encoder.copyTextureToTexture(
+          { texture: intermediateTexture, mipLevel: level },
+          { texture: finalTexture, mipLevel: level },
+          { width: mipWidth, height: mipHeight, depthOrArrayLayers: 1 }
+        );
+      }
+      this.device.queue.submit([encoder.finish()]);
+
+      return finalTexture;
     }
   }
 
@@ -690,14 +732,30 @@ export default class Renderer {
   #createDefaultTextures() {
     // 1x1 white sRGB texture (base color/emissive default)
     {
-      this.defaultTexture = this.device.createTexture({
+      this.defaultSRGBTexture = this.device.createTexture({
         size: [1, 1, 1],
         format: "rgba8unorm-srgb",
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
       const whitePixel = new Uint8Array([255, 255, 255, 255]);
       this.device.queue.writeTexture(
-        { texture: this.defaultTexture },
+        { texture: this.defaultSRGBTexture },
+        whitePixel,
+        { bytesPerRow: 4 },
+        { width: 1, height: 1 }
+      );
+    }
+
+    // 1x1 white UNORM texture (MR/Occlusion default)
+    {
+      this.defaultUNormTexture = this.device.createTexture({
+        size: [1, 1, 1],
+        format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      const whitePixel = new Uint8Array([255, 255, 255, 255]);
+      this.device.queue.writeTexture(
+        { texture: this.defaultUNormTexture },
         whitePixel,
         { bytesPerRow: 4 },
         { width: 1, height: 1 }
@@ -817,6 +875,66 @@ export default class Renderer {
     this.device.queue.writeBuffer(this.modelUniformBuffer, 0, modelData);
   }
 
+  #createSubMeshes(model) {
+    this.opaqueMeshes = [];
+    this.transparentMeshes = [];
+    const subMeshes = model.getSubMeshes();
+    const materials = model.getMaterials();
+    if (!subMeshes || !materials) return;
+
+    for (const sm of subMeshes) {
+      const mat = materials[sm.materialIndex];
+      const centroid = [
+        (sm.minBounds[0] + sm.maxBounds[0]) * 0.5,
+        (sm.minBounds[1] + sm.maxBounds[1]) * 0.5,
+        (sm.minBounds[2] + sm.maxBounds[2]) * 0.5,
+      ];
+      const dst = {
+        firstIndex: sm.firstIndex,
+        indexCount: sm.indexCount,
+        materialIndex: sm.materialIndex,
+        centroid: centroid,
+      };
+      if (mat && mat.alphaMode === 2) {
+        this.transparentMeshes.push(dst);
+      } else {
+        this.opaqueMeshes.push(dst);
+      }
+    }
+  }
+
+  #sortTransparentMeshes(modelMatrix, viewMatrix) {
+    const modelView = mat4.create();
+    mat4.multiply(modelView, viewMatrix, modelMatrix);
+  
+    // Attempt to reuse array and objects from previous frame
+    const sorted = this.transparentMeshesDepthSorted;
+  
+    let count = 0;
+    for (let i = 0; i < this.transparentMeshes.length; i++) {
+      const sm = this.transparentMeshes[i];
+      const c = sm.centroid;
+      const centroidWorld = vec4.fromValues(c[0], c[1], c[2], 1.0);
+      const centroidView = vec4.create();
+      vec4.transformMat4(centroidView, centroidWorld, modelView);
+      const depth = centroidView[2];
+  
+      if (depth < 0.0) {
+        let entry = sorted[count];
+        if (!entry) { // More entries than previous frame, create new object
+          entry = {};
+          sorted[count] = entry;
+        }
+        entry.depth = depth;
+        entry.meshIndex = i;
+        count++;
+      }
+    }
+  
+    sorted.length = count; // truncate if fewer than previous frame
+    sorted.sort((a, b) => a.depth - b.depth);
+  }  
+
   #createVertexBuffer() {
     if (this.vertexBuffer) {
       this.vertexBuffer.destroy();
@@ -869,6 +987,9 @@ export default class Renderer {
         depthLoadOp: "clear",
         depthClearValue: 1.0,
         depthStoreOp: "store",
+        stencilLoadOp: "clear",
+        stencilClearValue: 0,
+        stencilStoreOp: "store",
       },
     };
   }
@@ -878,14 +999,16 @@ export default class Renderer {
     console.log("Destroying existing shader resources...");
 
     // Store references to current pipelines in case reload fails
-    const oldModelPipeline = this.pipeline;
+    const oldModelPipelineOpaque = this.modelPipelineOpaque;
+    const oldModelPipelineTransparent = this.modelPipelineTransparent;
     const oldEnvPipeline = this.environmentPipeline;
     const oldModelShaderModule = this.shaderModule;
     const oldEnvShaderModule = this.environmentShaderModule;
 
     try {
       // Clear current pipeline and shader module
-      this.pipeline = null;
+      this.modelPipelineOpaque = null;
+      this.modelPipelineTransparent = null;
       this.environmentPipeline = null;
       this.shaderModule = null;
       this.environmentShaderModule = null;
@@ -902,7 +1025,8 @@ export default class Renderer {
       console.error("Failed to reload shaders, restoring previous pipeline:", error);
       
       // Restore previous pipelines if reload failed
-      this.pipeline = oldModelPipeline;
+      this.modelPipelineOpaque = oldModelPipelineOpaque;
+      this.modelPipelineTransparent = oldModelPipelineTransparent;
       this.environmentPipeline = oldEnvPipeline;
       this.shaderModule = oldModelShaderModule;
       this.environmentShaderModule = oldEnvShaderModule;
