@@ -1,66 +1,94 @@
+/**
+ * @file Renderer.js
+ * @brief Main rendering class for WebGPU-based glTF viewer with IBL support.
+ */
+
 const { mat4, vec4 } = glMatrix;
 import PanoramaToCubemapConverter from './PanoramaToCubemapConverter.js';
 import MipmapGenerator, { MipKind } from './MipmapGenerator.js';
+import EnvironmentPreprocessor from './EnvironmentPreprocessor.js';
+
+// IBL texture size constants
+const kIrradianceMapSize = 64;
+const kPrecomputedSpecularMapSize = 512;
+const kBRDFIntegrationLUTMapSize = 128;
 
 export default class Renderer {
+  /**
+   * @brief Constructs a new renderer instance.
+   */
   constructor() {
     // WebGPU resources
     this.device = null;
     this.context = null;
     this.format = null;
-
-    // Rendering resources
     this.depthTexture = null;
     this.depthTextureView = null;
     this.renderPassDescriptor = null;
+
+    // Global data
     this.globalUniformBuffer = null;
-    this.modelUniformBuffer = null;
-    this.sampler = null;
-    this.defaultSRGBTexture = null;
-    this.defaultUNormTexture = null;
-    this.defaultNormalTexture = null;
-    this.defaultCubeTexture = null;
-    // Per-material resources
-    this.materialBindGroups = []; // bind group per material
-    this.materialUniformBuffers = []; // uniform buffer per material
+    this.globalBindGroupLayout = null;
+    this.globalBindGroup = null;
 
     // Environment and IBL related data
     this.environmentTexture = null;
     this.environmentTextureView = null;
+    this.iblIrradianceTexture = null;
+    this.iblIrradianceTextureView = null;
+    this.iblSpecularTexture = null;
+    this.iblSpecularTextureView = null;
+    this.iblBrdfIntegrationLUT = null;
+    this.iblBrdfIntegrationLUTView = null;
     this.environmentCubeSampler = null;
+    this.iblBrdfIntegrationLUTSampler = null;
     this.environmentShaderModule = null;
     this.environmentPipeline = null;
-    this.panoramaConverter = null;
-    this.mipmapGenerator = null;
 
-    // Bind group layouts
-    this.globalBindGroupLayout = null;
+    // Model related data
+    this.modelShaderModule = null;
     this.materialBindGroupLayout = null;
-    this.globalBindGroup = null;
-
-    // Model-specific resources
-    this.vertexBuffer = null;
-    this.indexBuffer = null;
-    this.indices = null;
-    this.vertexData = null;
-    this.modelTextures = [];
-    this.modelTextureTypes = [];
-
-    // Model pipelines
     this.modelPipelineOpaque = null;
     this.modelPipelineTransparent = null;
+    this.vertexBuffer = null;
+    this.indexBuffer = null;
+    this.modelUniformBuffer = null;
+    this.modelTextureSampler = null;
 
-    // Meshes
+    // Default textures
+    this.defaultSRGBTexture = null;
+    this.defaultSRGBTextureView = null;
+    this.defaultUNormTexture = null;
+    this.defaultUNormTextureView = null;
+    this.defaultNormalTexture = null;
+    this.defaultNormalTextureView = null;
+    this.defaultCubeTexture = null;
+
+    // Model-specific helper data 
+    this.modelUpdateComplete = false; // Flag to track if updateModel() has completed
+
+    // Meshes and Materials
     this.opaqueMeshes = [];
     this.transparentMeshes = [];
+    this.materials = [];
     this.transparentMeshesDepthSorted = [];
   }
 
+  /**
+   * @brief Initializes the renderer with WebGPU resources, pipelines, and initial model/environment.
+   * @param {HTMLCanvasElement} canvas - The canvas element to render to
+   * @param {Object} camera - The camera object
+   * @param {Object} environment - The environment object
+   * @param {Object} model - The model object
+   */
   async initialize(canvas, camera, environment, model) {
     // Store references to dependencies
     this.camera = camera;
     this.environment = environment;
     this.model = model;
+    
+    // Initialize model update flag
+    this.modelUpdateComplete = false;
 
     // Initialize WebGPU
     await this.#initWebGPU(canvas);
@@ -73,7 +101,6 @@ export default class Renderer {
 
     this.#createRenderPassDescriptor();
 
-    this.mipmapGenerator = new MipmapGenerator(this.device);
     this.#createDefaultTextures();
     
     await this.#createModelRenderPipelines();
@@ -86,34 +113,43 @@ export default class Renderer {
     await this.updateModel(model);
   }
 
+  /**
+   * @brief Updates the model WebGPUresources (vertices, indices, materials, meshes).
+   * @param {Object} model - The model object to render
+   */
   async updateModel(model) {
     if (!model.isLoaded()) return;
 
     const t0 = performance.now();
-   
+    
+    // Mark model update as in progress
+    this.modelUpdateComplete = false;
+
     // Store the new model reference
     this.model = model;
 
-    // Get model data
-    this.vertexData = model.getVertices();
-    this.indices = model.getIndices();
-
     // Create vertex buffer
-    this.#createVertexBuffer();
+    this.#createVertexBuffer(model);
 
     // Create index buffer
-    this.#createIndexBuffer();
+    this.#createIndexBuffer(model);
 
-    // Load model textures then build per-material bind groups
-    await this.#loadModelTextures(model);
-    this.#createMaterialBindGroups(model);
+    // Create materials with textures and bind groups
+    await this.#createMaterials(model);
 
     // Build opaque/transparent mesh lists
     this.#createSubMeshes(model);
 
+    // Mark model update as complete (after all async operations finish)
+    this.modelUpdateComplete = true;
+
     console.log(`Updated Model WebGPU resources in ${(performance.now() - t0).toFixed(2)} ms`);
   }
 
+  /**
+   * @brief Updates the environment WebGPU resources (cubemap, IBL maps).
+   * @param {Object} environment - The environment object
+   */
   async updateEnvironment(environment) {
     if (!environment || !environment.getTexture().m_data) {
       console.warn("No environment data to process");
@@ -122,24 +158,37 @@ export default class Renderer {
     // Store the new environment reference
     this.environment = environment;
 
-    try {
-      const t0 = performance.now();
+    const t0 = performance.now();
 
-      // Create environment textures and convert panorama to cubemap
-      await this.#createEnvironmentTextures();
-      
-      // Create global bind group with environment resources
-      this.#createGlobalBindGroup();
-      
-      console.log(`Updated Environment WebGPU resources in ${(performance.now() - t0).toFixed(2)} ms`);
-    } catch (error) {
-      console.error("Failed to update environment:", error);
-      throw error;
-    }
+    // Destroy the existing environment resources
+    this.environmentTexture = null;
+    this.environmentTextureView = null;
+    this.iblIrradianceTexture = null;
+    this.iblIrradianceTextureView = null;
+    this.iblSpecularTexture = null;
+    this.iblSpecularTextureView = null;
+    this.iblBrdfIntegrationLUT = null;
+    this.iblBrdfIntegrationLUTView = null;
+
+    // Create environment textures and convert panorama to cubemap
+    await this.#createEnvironmentTextures();
+    
+    // Create global bind group with environment resources
+    this.#createGlobalBindGroup();
+    
+    console.log(`Updated Environment WebGPU resources in ${(performance.now() - t0).toFixed(2)} ms`);
   }
 
+  /**
+   * @brief Renders a frame (environment background + model).
+   */
   render() {
     if (!this.model || !this.model.isLoaded()) return;
+    
+    // Guard against race condition: ensure updateModel() has completed
+    if (!this.modelUpdateComplete) {
+      return; // updateModel() is still in progress, skip rendering
+    }
 
     // Skip rendering if pipeline is not ready
     if (!this.environmentPipeline) {
@@ -180,7 +229,7 @@ export default class Renderer {
     // Draw opaque submeshes
     pass.setPipeline(this.modelPipelineOpaque);
     for (const sm of this.opaqueMeshes) {
-      pass.setBindGroup(1, this.materialBindGroups[sm.materialIndex]);
+      pass.setBindGroup(1, this.materials[sm.materialIndex].bindGroup);
       pass.drawIndexed(sm.indexCount, 1, sm.firstIndex, 0, 0);
     }
 
@@ -188,7 +237,7 @@ export default class Renderer {
     pass.setPipeline(this.modelPipelineTransparent);
     for (const depthInfo of this.transparentMeshesDepthSorted) {
       const sm = this.transparentMeshes[depthInfo.meshIndex];
-      pass.setBindGroup(1, this.materialBindGroups[sm.materialIndex]);
+      pass.setBindGroup(1, this.materials[sm.materialIndex].bindGroup);
       pass.drawIndexed(sm.indexCount, 1, sm.firstIndex, 0, 0);
     }
 
@@ -199,6 +248,11 @@ export default class Renderer {
     this.device.queue.submit([encoder.finish()]);
   }
 
+  /**
+   * @brief Resizes the renderer's depth texture and updates render pass descriptor.
+   * @param {number} width - New width in pixels
+   * @param {number} height - New height in pixels
+   */
   resize(width, height) {
     // Recreate depth texture with new size
     this.#createDepthTexture(width, height);
@@ -210,6 +264,10 @@ export default class Renderer {
 
   // Private methods
 
+  /**
+   * @brief Creates bind group layouts for global and material resources.
+   * @private
+   */
   #createBindGroupLayouts() {
     // Global bind group layout (group 0) - environment and camera resources
     this.globalBindGroupLayout = this.device.createBindGroupLayout({
@@ -232,6 +290,35 @@ export default class Renderer {
             viewDimension: 'cube'
           }
         }, // Environment cubemap
+        {
+          binding: 3,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: {
+            sampleType: 'float',
+            viewDimension: 'cube'
+          }
+        }, // IBL irradiance cubemap
+        {
+          binding: 4,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: {
+            sampleType: 'float',
+            viewDimension: 'cube'
+          }
+        }, // IBL specular cubemap
+        {
+          binding: 5,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: {
+            sampleType: 'float',
+            viewDimension: '2d'
+          }
+        }, // IBL BRDF integration LUT texture
+        {
+          binding: 6,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: 'filtering' }
+        }, // IBL BRDF integration LUT sampler
       ],
     });
 
@@ -258,6 +345,10 @@ export default class Renderer {
     });
   }
 
+  /**
+   * @brief Creates the global bind group with environment and IBL resources.
+   * @private
+   */
   #createGlobalBindGroup() {
     if (!this.globalBindGroupLayout || !this.globalUniformBuffer) {
       console.warn("Cannot create global bind group: missing layout or uniform buffer");
@@ -265,20 +356,33 @@ export default class Renderer {
     }
 
     // Use environment resources if available, otherwise use fallbacks
-    const envSampler = this.environmentCubeSampler || this.sampler;
     const envTexture = this.environmentTextureView || this.defaultCubeTexture.createView();
+    
+    // Use IBL resources if available, otherwise use fallbacks
+    const iblIrradianceTexture = this.iblIrradianceTextureView || this.defaultCubeTexture.createView();
+    const iblSpecularTexture = this.iblSpecularTextureView || this.defaultCubeTexture.createView();
+    const iblBrdfLUTTexture = this.iblBrdfIntegrationLUTView || this.defaultUNormTexture.createView();
 
     this.globalBindGroup = this.device.createBindGroup({
       layout: this.globalBindGroupLayout,
       entries: [
-        { binding: 0, resource: { buffer: this.globalUniformBuffer } }, // Global uniforms
-        { binding: 1, resource: envSampler }, // Environment sampler (or fallback)
-        { binding: 2, resource: envTexture }, // Environment cubemap (or fallback)
+        { binding: 0, resource: { buffer: this.globalUniformBuffer } },
+        { binding: 1, resource: this.environmentCubeSampler },
+        { binding: 2, resource: envTexture },
+        { binding: 3, resource: iblIrradianceTexture },
+        { binding: 4, resource: iblSpecularTexture },
+        { binding: 5, resource: iblBrdfLUTTexture },
+        { binding: 6, resource: this.iblBrdfIntegrationLUTSampler },
       ],
     });
   }
 
-  // Helper function for power-of-2 calculation
+  /**
+   * @brief Calculates the largest power of 2 less than or equal to x.
+   * @param {number} x - Input value
+   * @returns {number} Largest power of 2 <= x
+   * @private
+   */
   #floorPow2(x) {
     let power = 1;
     while (power * 2 <= x) {
@@ -287,7 +391,13 @@ export default class Renderer {
     return power;
   }
 
-  // Create environment cubemap texture and view
+  /**
+   * @brief Creates an environment cubemap texture and view.
+   * @param {Array<number>} size - Texture size [width, height, depthOrArrayLayers]
+   * @param {boolean} mipmapping - Whether to enable mipmapping
+   * @returns {Object} Object with texture and textureView properties
+   * @private
+   */
   #createEnvironmentTexture(size, mipmapping = false) {
     // Calculate mip levels if mipmapping enabled
     const mipLevelCount = mipmapping ? 
@@ -316,7 +426,11 @@ export default class Renderer {
     return { texture, textureView };
   }
 
-  // Create environment sampler
+  /**
+   * @brief Creates a sampler for environment cubemap textures.
+   * @returns {GPUSampler} The created sampler
+   * @private
+   */
   #createEnvironmentSampler() {
     return this.device.createSampler({
       addressModeU: 'repeat',
@@ -328,8 +442,16 @@ export default class Renderer {
     });
   }
 
-  // Create environment textures and samplers
+  /**
+   * @brief Creates environment textures and IBL maps from panorama.
+   * @private
+   */
   async #createEnvironmentTextures() {
+    // Create helpers
+    const mipmapGenerator = new MipmapGenerator(this.device);
+    const panoramaConverter = new PanoramaToCubemapConverter(this.device);
+    const environmentPreprocessor = new EnvironmentPreprocessor(this.device);
+
     // Get panorama texture from environment
     const panoramaTexture = this.environment.getTexture();
     
@@ -341,28 +463,49 @@ export default class Renderer {
     this.environmentTexture = envResult.texture;
     this.environmentTextureView = envResult.textureView;
     
-    // Initialize panorama converter if not already created
-    if (!this.panoramaConverter) {
-      this.panoramaConverter = new PanoramaToCubemapConverter(this.device);
-    }
-    
     // Convert panorama to cubemap
-    await this.panoramaConverter.uploadAndConvert(panoramaTexture, this.environmentTexture);
+    await panoramaConverter.uploadAndConvert(panoramaTexture, this.environmentTexture);
     
     // Generate mipmaps for the environment cubemap
-    await this.mipmapGenerator.generateMipmaps(
+    await mipmapGenerator.generateMipmaps(
       this.environmentTexture,
       { width: environmentCubeSize, height: environmentCubeSize },
       MipKind.Float16Cube
     );
     
-    // Create environment sampler
-    if (!this.environmentCubeSampler) {
-      this.environmentCubeSampler = this.#createEnvironmentSampler();
-    }
+    // Create IBL textures
+    const irradianceResult = this.#createEnvironmentTexture([kIrradianceMapSize, kIrradianceMapSize, 6], true);
+    this.iblIrradianceTexture = irradianceResult.texture;
+    this.iblIrradianceTextureView = irradianceResult.textureView;
+    
+    const specularResult = this.#createEnvironmentTexture([kPrecomputedSpecularMapSize, kPrecomputedSpecularMapSize, 6], true);
+    this.iblSpecularTexture = specularResult.texture;
+    this.iblSpecularTextureView = specularResult.textureView;
+    
+    const brdfLUTResult = this.#createEnvironmentTexture([kBRDFIntegrationLUTMapSize, kBRDFIntegrationLUTMapSize, 1], false);
+    this.iblBrdfIntegrationLUT = brdfLUTResult.texture;
+    this.iblBrdfIntegrationLUTView = brdfLUTResult.textureView;
+    
+    // Precompute IBL maps
+    await environmentPreprocessor.generateMaps(
+      this.environmentTexture,
+      this.iblIrradianceTexture,
+      this.iblSpecularTexture,
+      this.iblBrdfIntegrationLUT
+    );
+    
+    // Generate mipmaps for irradiance texture
+    await mipmapGenerator.generateMipmaps(
+      this.iblIrradianceTexture,
+      { width: kIrradianceMapSize, height: kIrradianceMapSize },
+      MipKind.Float16Cube
+    );
   }
 
-  // Create environment rendering pipeline
+  /**
+   * @brief Creates the render pipeline for environment background rendering.
+   * @private
+   */
   async #createEnvironmentRenderPipeline() {
     try {
       // Load environment shader
@@ -405,6 +548,11 @@ export default class Renderer {
     }
   }
 
+  /**
+   * @brief Initializes WebGPU adapter, device, and canvas context.
+   * @param {HTMLCanvasElement} canvas - The canvas element
+   * @private
+   */
   async #initWebGPU(canvas) {
     // Get adapter
     const adapter = await navigator.gpu.requestAdapter();
@@ -428,6 +576,12 @@ export default class Renderer {
     });
   }
 
+  /**
+   * @brief Creates or recreates the depth texture with the specified dimensions.
+   * @param {number} width - Texture width in pixels
+   * @param {number} height - Texture height in pixels
+   * @private
+   */
   #createDepthTexture(width, height) {
     if (this.depthTexture) {
       this.depthTexture.destroy();
@@ -442,6 +596,10 @@ export default class Renderer {
     this.depthTextureView = this.depthTexture.createView();
   }
 
+  /**
+   * @brief Creates render pipelines for opaque and transparent model rendering.
+   * @private
+   */
   async #createModelRenderPipelines() {
     // Load shader code from file
     const shaderCode = await this.#loadShaderFile("./shaders/gltf_pbr.wgsl");
@@ -515,6 +673,10 @@ export default class Renderer {
     });
   }
 
+  /**
+   * @brief Creates uniform buffers for global and model uniforms.
+   * @private
+   */
   #createUniformBuffers() {
     // Global uniforms: 5 mat4 + vec3 + padding = 5*64 + 16 = 336 bytes, round up to 512 for alignment
     this.globalUniformBuffer = this.device.createBuffer({
@@ -531,26 +693,42 @@ export default class Renderer {
     // Per-material uniform buffers created later in #createMaterialBindGroups
   }
 
-  #createMaterialBindGroups(model) {
-    this.materialBindGroups = [];
-    this.materialUniformBuffers = [];
+  /**
+   * @brief Creates materials with textures, uniform buffers, and bind groups.
+   * @param {Object} model - The model object
+   * @private
+   */
+  async #createMaterials(model) {
+    // Create mipmap generator helper
+    const mipmapGenerator = new MipmapGenerator(this.device);
+
+    this.materials = [];
     if (!this.materialBindGroupLayout) return; // layout must exist
 
-    const materials = model.getMaterials();
-    if (!materials || materials.length === 0) return;
+    const srcMaterials = model.getMaterials();
+    if (!srcMaterials || srcMaterials.length === 0) return;
 
-    // Helper to fetch texture by direct index (already mapped) or fallback
-    const texOrDefault = (idx, kind) => {
-      if (idx !== undefined && idx >= 0 && idx < this.modelTextures.length) {
-        return this.modelTextures[idx];
-      }
-      if (kind === "normal") return this.defaultNormalTexture;
-      if (kind === "metallicRoughness" || kind === "occlusion") return this.defaultUNormTexture;
-      return this.defaultSRGBTexture;
-    };
-
-    for (let i = 0; i < materials.length; i++) {
-      const m = materials[i];
+    for (let i = 0; i < srcMaterials.length; i++) {
+      const srcMat = srcMaterials[i];
+      const material = {
+        uniforms: {
+          baseColorFactor: srcMat.baseColorFactor,
+          emissiveFactor: srcMat.emissiveFactor,
+          metallicFactor: srcMat.metallicFactor,
+          roughnessFactor: srcMat.roughnessFactor,
+          normalScale: srcMat.normalScale,
+          occlusionStrength: srcMat.occlusionStrength,
+          alphaCutoff: srcMat.alphaCutoff,
+          alphaMode: srcMat.alphaMode,
+        },
+        uniformBuffer: null,
+        baseColorTexture: null,
+        metallicRoughnessTexture: null,
+        normalTexture: null,
+        occlusionTexture: null,
+        emissiveTexture: null,
+        bindGroup: null,
+      };
 
       // Create per-material uniform buffer
       const ub = this.device.createBuffer({
@@ -559,69 +737,111 @@ export default class Renderer {
       });
       const data = new Float32Array(16);
       let o = 0;
-      data.set(m.baseColorFactor, o);
+      data.set(material.uniforms.baseColorFactor, o);
       o += 4;
-      data[o++] = m.emissiveFactor[0];
-      data[o++] = m.emissiveFactor[1];
-      data[o++] = m.emissiveFactor[2];
-      data[o++] = m.alphaMode;
-      data[o++] = m.metallicFactor;
-      data[o++] = m.roughnessFactor;
-      data[o++] = m.normalScale;
-      data[o++] = m.occlusionStrength;
-      data[o++] = m.alphaCutoff;
+      data[o++] = material.uniforms.emissiveFactor[0];
+      data[o++] = material.uniforms.emissiveFactor[1];
+      data[o++] = material.uniforms.emissiveFactor[2];
+      data[o++] = material.uniforms.alphaMode;
+      data[o++] = material.uniforms.metallicFactor;
+      data[o++] = material.uniforms.roughnessFactor;
+      data[o++] = material.uniforms.normalScale;
+      data[o++] = material.uniforms.occlusionStrength;
+      data[o++] = material.uniforms.alphaCutoff;
       while (o < 16) data[o++] = 0.0;
       this.device.queue.writeBuffer(ub, 0, data.buffer);
-      this.materialUniformBuffers.push(ub);
+      material.uniformBuffer = ub;
 
-      const baseColorTex = texOrDefault(m.baseColorTexture, "baseColor");
-      const mrTex = texOrDefault(
-        m.metallicRoughnessTexture,
-        "metallicRoughness"
-      );
-      const normalTex = texOrDefault(m.normalTexture, "normal");
-      const occTex = texOrDefault(m.occlusionTexture, "occlusion");
-      const emissiveTex = texOrDefault(m.emissiveTexture, "emissive");
+      // Create textures for this material
+      // Base Color Texture
+      if (srcMat.baseColorTexture !== undefined && srcMat.baseColorTexture >= 0) {
+        const texture = model.getTexture(srcMat.baseColorTexture);
+        if (texture && texture.image) {
+          // Set type for proper format/mip handling
+          const textureWithType = { ...texture, type: "baseColor" };
+          material.baseColorTexture = await this.#createModelTexture(textureWithType, mipmapGenerator);
+        }
+      }
+      if (!material.baseColorTexture) {
+        material.baseColorTexture = this.defaultSRGBTexture;
+      }
 
+      // Metallic-Roughness Texture
+      if (srcMat.metallicRoughnessTexture !== undefined && srcMat.metallicRoughnessTexture >= 0) {
+        const texture = model.getTexture(srcMat.metallicRoughnessTexture);
+        if (texture && texture.image) {
+          const textureWithType = { ...texture, type: "metallicRoughness" };
+          material.metallicRoughnessTexture = await this.#createModelTexture(textureWithType, mipmapGenerator);
+        }
+      }
+      if (!material.metallicRoughnessTexture) {
+        material.metallicRoughnessTexture = this.defaultUNormTexture;
+      }
+
+      // Normal Texture
+      if (srcMat.normalTexture !== undefined && srcMat.normalTexture >= 0) {
+        const texture = model.getTexture(srcMat.normalTexture);
+        if (texture && texture.image) {
+          const textureWithType = { ...texture, type: "normal" };
+          material.normalTexture = await this.#createModelTexture(textureWithType, mipmapGenerator);
+        }
+      }
+      if (!material.normalTexture) {
+        material.normalTexture = this.defaultNormalTexture;
+      }
+
+      // Occlusion Texture
+      if (srcMat.occlusionTexture !== undefined && srcMat.occlusionTexture >= 0) {
+        const texture = model.getTexture(srcMat.occlusionTexture);
+        if (texture && texture.image) {
+          const textureWithType = { ...texture, type: "occlusion" };
+          material.occlusionTexture = await this.#createModelTexture(textureWithType, mipmapGenerator);
+        }
+      }
+      if (!material.occlusionTexture) {
+        material.occlusionTexture = this.defaultUNormTexture;
+      }
+
+      // Emissive Texture
+      if (srcMat.emissiveTexture !== undefined && srcMat.emissiveTexture >= 0) {
+        const texture = model.getTexture(srcMat.emissiveTexture);
+        if (texture && texture.image) {
+          const textureWithType = { ...texture, type: "emissive" };
+          material.emissiveTexture = await this.#createModelTexture(textureWithType, mipmapGenerator);
+        }
+      }
+      if (!material.emissiveTexture) {
+        material.emissiveTexture = this.defaultSRGBTexture;
+      }
+
+      // Create bind group
       const bg = this.device.createBindGroup({
         layout: this.materialBindGroupLayout,
         entries: [
           { binding: 0, resource: { buffer: this.modelUniformBuffer } }, // Model uniforms
-          { binding: 1, resource: { buffer: ub } }, // Material uniforms
-          { binding: 2, resource: this.sampler }, // Sampler
-          { binding: 3, resource: baseColorTex.createView() }, // BaseColor
-          { binding: 4, resource: mrTex.createView() }, // MetallicRoughness
-          { binding: 5, resource: normalTex.createView() }, // Normal
-          { binding: 6, resource: occTex.createView() }, // Occlusion
-          { binding: 7, resource: emissiveTex.createView() }, // Emissive
+          { binding: 1, resource: { buffer: material.uniformBuffer } }, // Material uniforms
+          { binding: 2, resource: this.modelTextureSampler }, // Model texture sampler
+          { binding: 3, resource: material.baseColorTexture.createView() }, // BaseColor
+          { binding: 4, resource: material.metallicRoughnessTexture.createView() }, // MetallicRoughness
+          { binding: 5, resource: material.normalTexture.createView() }, // Normal
+          { binding: 6, resource: material.occlusionTexture.createView() }, // Occlusion
+          { binding: 7, resource: material.emissiveTexture.createView() }, // Emissive
         ],
       });
-      this.materialBindGroups.push(bg);
-    }
-  }
+      material.bindGroup = bg;
 
-  async #loadModelTextures(model) {
-    this.modelTextures = [];
-    this.modelTextureTypes = [];
-
-    const textures = model.getTextures();
-
-    for (const texture of textures) {
-      if (texture.image) {
-        const webgpuTexture = await this.#createModelTexture(texture);
-        this.modelTextures.push(webgpuTexture);
-        this.modelTextureTypes.push(texture.type);
-      }
+      this.materials.push(material);
     }
   }
 
   /**
    * @brief Create a model texture with mipmaps using the appropriate MipKind.
    * @param {Object} texture - Texture info with image, width, height, and type.
+   * @param {MipmapGenerator} mipmapGenerator - Mipmap generator instance.
    * @returns {Promise<GPUTexture>} The created WebGPU texture with mipmaps.
    * @private
    */
-  async #createModelTexture(texture) {
+  async #createModelTexture(texture, mipmapGenerator) {
     const { image, width, height, type } = texture;
 
     // Calculate mip level count
@@ -659,7 +879,7 @@ export default class Renderer {
       );
 
       // Generate mipmaps via render path
-      await this.mipmapGenerator.generateMipmaps(
+      await mipmapGenerator.generateMipmaps(
         finalTexture,
         { width, height },
         MipKind.SRGB2D
@@ -689,7 +909,7 @@ export default class Renderer {
       );
 
       // Generate mipmaps via compute (normal-aware or linear)
-      await this.mipmapGenerator.generateMipmaps(
+      await mipmapGenerator.generateMipmaps(
         intermediateTexture,
         { width, height },
         mipKind
@@ -719,16 +939,38 @@ export default class Renderer {
     }
   }
 
+  /**
+   * @brief Creates samplers for model textures, environment cubemap, and BRDF LUT.
+   * @private
+   */
   #createSamplers() {
-    this.sampler = this.device.createSampler({
+    // Model textures sampler
+    this.modelTextureSampler = this.device.createSampler({
       magFilter: "linear",
       minFilter: "linear",
       mipmapFilter: "linear",
       addressModeU: "repeat",
       addressModeV: "repeat",
     });
+
+    // Environment cube sampler
+    this.environmentCubeSampler = this.#createEnvironmentSampler();
+
+    // BRDF LUT sampler
+    this.iblBrdfIntegrationLUTSampler = this.device.createSampler({
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+      addressModeW: 'clamp-to-edge',
+      minFilter: 'linear',
+      magFilter: 'linear',
+      mipmapFilter: 'nearest',
+    });
   }
 
+  /**
+   * @brief Creates default fallback textures (sRGB, UNORM, normal, cube).
+   * @private
+   */
   #createDefaultTextures() {
     // 1x1 white sRGB texture (base color/emissive default)
     {
@@ -797,11 +1039,19 @@ export default class Renderer {
     }
   }
 
+  /**
+   * @brief Updates all uniform buffers (global and model).
+   * @private
+   */
   #updateUniforms() {
     this.#updateGlobalUniforms();
     this.#updateModelUniforms();
   }
 
+  /**
+   * @brief Updates the global uniform buffer with camera matrices and position.
+   * @private
+   */
   #updateGlobalUniforms() {
     // Global uniforms: camera matrices and position only
     const globalData = new Float32Array(80); // 5 matrices * 16 floats + 4 floats for camera pos
@@ -828,6 +1078,10 @@ export default class Renderer {
     this.device.queue.writeBuffer(this.globalUniformBuffer, 0, globalData);
   }
 
+  /**
+   * @brief Updates the model uniform buffer with model and normal matrices.
+   * @private
+   */
   #updateModelUniforms() {
     // Model uniforms: model transform matrices only
     const modelData = new Float32Array(32); // 2 matrices * 16 floats
@@ -875,6 +1129,11 @@ export default class Renderer {
     this.device.queue.writeBuffer(this.modelUniformBuffer, 0, modelData);
   }
 
+  /**
+   * @brief Creates submesh lists (opaque and transparent) from model data.
+   * @param {Object} model - The model object
+   * @private
+   */
   #createSubMeshes(model) {
     this.opaqueMeshes = [];
     this.transparentMeshes = [];
@@ -903,6 +1162,12 @@ export default class Renderer {
     }
   }
 
+  /**
+   * @brief Sorts transparent meshes by depth for back-to-front rendering.
+   * @param {Array<number>} modelMatrix - Model transformation matrix
+   * @param {Array<number>} viewMatrix - View transformation matrix
+   * @private
+   */
   #sortTransparentMeshes(modelMatrix, viewMatrix) {
     const modelView = mat4.create();
     mat4.multiply(modelView, viewMatrix, modelMatrix);
@@ -935,43 +1200,58 @@ export default class Renderer {
     sorted.sort((a, b) => a.depth - b.depth);
   }  
 
-  #createVertexBuffer() {
+  /**
+   * @brief Creates the vertex buffer from model vertex data.
+   * @param {Object} model - The model object
+   * @private
+   */
+  #createVertexBuffer(model) {
     if (this.vertexBuffer) {
       this.vertexBuffer.destroy();
     }
 
+    const vertexData = model.getVertices();
+
     this.vertexBuffer = this.device.createBuffer({
-      size: this.vertexData.byteLength,
+      size: vertexData.byteLength,
       usage: GPUBufferUsage.VERTEX,
       mappedAtCreation: true,
     });
 
-    new Float32Array(this.vertexBuffer.getMappedRange()).set(this.vertexData);
+    new Float32Array(this.vertexBuffer.getMappedRange()).set(vertexData);
     this.vertexBuffer.unmap();
   }
 
-  #createIndexBuffer() {
+  /**
+   * @brief Creates the index buffer from model index data.
+   * @param {Object} model - The model object
+   * @private
+   */
+  #createIndexBuffer(model) {
     if (this.indexBuffer) {
       this.indexBuffer.destroy();
     }
 
-    if (this.indices.length > 0) {
+    const indices = model.getIndices();
+
+    if (indices.length > 0) {
       this.indexBuffer = this.device.createBuffer({
-        size: this.indices.length * 4, // Always use 32-bit (4 bytes per index)
+        size: indices.length * 4, // Always use 32-bit (4 bytes per index)
         usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true,
       });
 
       // Convert to 32-bit typed array
-      const typedIndices = new Uint32Array(this.indices);
+      const typedIndices = new Uint32Array(indices);
       new Uint32Array(this.indexBuffer.getMappedRange()).set(typedIndices);
       this.indexBuffer.unmap();
-
-      // Store the typed array for format detection in render()
-      this.indices = typedIndices;
     }
   }
 
+  /**
+   * @brief Creates the render pass descriptor for color and depth attachments.
+   * @private
+   */
   #createRenderPassDescriptor() {
     this.renderPassDescriptor = {
       colorAttachments: [
@@ -994,7 +1274,9 @@ export default class Renderer {
     };
   }
 
-  // Reload shaders from disk
+  /**
+   * @brief Reloads shaders from disk and recreates pipelines.
+   */
   async reloadShaders() {
     console.log("Destroying existing shader resources...");
 
@@ -1035,7 +1317,12 @@ export default class Renderer {
     }
   }
 
-  // Load shader file from disk
+  /**
+   * @brief Loads a shader file from disk with cache-busting.
+   * @param {string} path - Path to the shader file
+   * @returns {Promise<string>} The shader source code
+   * @private
+   */
   async #loadShaderFile(path) {
     try {
       // Add cache-busting parameter to force reload from disk
