@@ -253,8 +253,15 @@ async function launchApp() {
     // Update model
     model.update(deltaTime, isAnimating);
 
+    // Prepare camera uniforms
+    const cameraUniforms = {
+      viewMatrix: camera.getViewMatrix(),
+      projectionMatrix: camera.getProjectionMatrix(),
+      cameraPosition: camera.getWorldPosition(),
+    };
+
     // Render frame
-    renderer.render();
+    renderer.render(model.getTransform(), cameraUniforms);
 
     // Continue loop
     requestAnimationFrame(frame);

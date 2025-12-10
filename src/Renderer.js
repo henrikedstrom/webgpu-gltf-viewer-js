@@ -82,11 +82,6 @@ export default class Renderer {
    * @param {Object} model - The model object
    */
   async initialize(canvas, camera, environment, model) {
-    // Store references to dependencies
-    this.camera = camera;
-    this.environment = environment;
-    this.model = model;
-    
     // Initialize model update flag
     this.modelUpdateComplete = false;
 
@@ -125,9 +120,6 @@ export default class Renderer {
     // Mark model update as in progress
     this.modelUpdateComplete = false;
 
-    // Store the new model reference
-    this.model = model;
-
     // Create vertex buffer
     this.#createVertexBuffer(model);
 
@@ -155,8 +147,6 @@ export default class Renderer {
       console.warn("No environment data to process");
       return;
     }
-    // Store the new environment reference
-    this.environment = environment;
 
     const t0 = performance.now();
 
@@ -171,7 +161,7 @@ export default class Renderer {
     this.iblBrdfIntegrationLUTView = null;
 
     // Create environment textures and convert panorama to cubemap
-    await this.#createEnvironmentTextures();
+    await this.#createEnvironmentTextures(environment);
     
     // Create global bind group with environment resources
     this.#createGlobalBindGroup();
@@ -181,10 +171,10 @@ export default class Renderer {
 
   /**
    * @brief Renders a frame (environment background + model).
+   * @param {Array<number>} modelMatrix - The model transformation matrix (16-element array)
+   * @param {Object} cameraUniforms - Camera uniforms object with viewMatrix, projectionMatrix, and cameraPosition
    */
-  render() {
-    if (!this.model || !this.model.isLoaded()) return;
-    
+  render(modelMatrix, cameraUniforms) {
     // Guard against race condition: ensure updateModel() has completed
     if (!this.modelUpdateComplete) {
       return; // updateModel() is still in progress, skip rendering
@@ -201,8 +191,8 @@ export default class Renderer {
     }
 
     // Update view dependent data
-    this.#updateUniforms();
-    this.#sortTransparentMeshes(this.model.getTransform(), this.camera.getViewMatrix());
+    this.#updateUniforms(modelMatrix, cameraUniforms);
+    this.#sortTransparentMeshes(modelMatrix, cameraUniforms.viewMatrix);
 
     // Get current texture
     const currentTexture = this.context.getCurrentTexture();
@@ -444,16 +434,17 @@ export default class Renderer {
 
   /**
    * @brief Creates environment textures and IBL maps from panorama.
+   * @param {Object} environment - The environment object
    * @private
    */
-  async #createEnvironmentTextures() {
+  async #createEnvironmentTextures(environment) {
     // Create helpers
     const mipmapGenerator = new MipmapGenerator(this.device);
     const panoramaConverter = new PanoramaToCubemapConverter(this.device);
     const environmentPreprocessor = new EnvironmentPreprocessor(this.device);
 
     // Get panorama texture from environment
-    const panoramaTexture = this.environment.getTexture();
+    const panoramaTexture = environment.getTexture();
     
     // Calculate environment cubemap size (power of 2, based on panorama width)
     const environmentCubeSize = this.#floorPow2(panoramaTexture.m_width);
@@ -1041,24 +1032,27 @@ export default class Renderer {
 
   /**
    * @brief Updates all uniform buffers (global and model).
+   * @param {Array<number>} modelMatrix - The model transformation matrix (16-element array)
+   * @param {Object} cameraUniforms - Camera uniforms object with viewMatrix, projectionMatrix, and cameraPosition
    * @private
    */
-  #updateUniforms() {
-    this.#updateGlobalUniforms();
-    this.#updateModelUniforms();
+  #updateUniforms(modelMatrix, cameraUniforms) {
+    this.#updateGlobalUniforms(cameraUniforms);
+    this.#updateModelUniforms(modelMatrix);
   }
 
   /**
    * @brief Updates the global uniform buffer with camera matrices and position.
+   * @param {Object} cameraUniforms - Camera uniforms object with viewMatrix, projectionMatrix, and cameraPosition
    * @private
    */
-  #updateGlobalUniforms() {
+  #updateGlobalUniforms(cameraUniforms) {
     // Global uniforms: camera matrices and position only
     const globalData = new Float32Array(80); // 5 matrices * 16 floats + 4 floats for camera pos
 
-    const viewMatrix = this.camera.getViewMatrix();
-    const projectionMatrix = this.camera.getProjectionMatrix();
-    const cameraPos = this.camera.getWorldPosition();
+    const viewMatrix = cameraUniforms.viewMatrix;
+    const projectionMatrix = cameraUniforms.projectionMatrix;
+    const cameraPos = cameraUniforms.cameraPosition;
 
     // Compute inverse matrices
     const inverseViewMatrix = mat4.create();
@@ -1080,13 +1074,12 @@ export default class Renderer {
 
   /**
    * @brief Updates the model uniform buffer with model and normal matrices.
+   * @param {Array<number>} modelMatrix - The model transformation matrix (16-element array)
    * @private
    */
-  #updateModelUniforms() {
+  #updateModelUniforms(modelMatrix) {
     // Model uniforms: model transform matrices only
     const modelData = new Float32Array(32); // 2 matrices * 16 floats
-
-    const modelMatrix = this.model.getTransform();
     
     // Compute normal matrix: inverse transpose of upper 3x3 of model matrix
     const modelMatrix3x3 = [
@@ -1164,8 +1157,8 @@ export default class Renderer {
 
   /**
    * @brief Sorts transparent meshes by depth for back-to-front rendering.
-   * @param {Array<number>} modelMatrix - Model transformation matrix
-   * @param {Array<number>} viewMatrix - View transformation matrix
+   * @param {Array<number>} modelMatrix - Model transformation matrix (16-element array)
+   * @param {Array<number>} viewMatrix - View transformation matrix (16-element array)
    * @private
    */
   #sortTransparentMeshes(modelMatrix, viewMatrix) {
