@@ -4,8 +4,8 @@ export default class Camera {
   // Constants
   static #kTumbleSpeed = 0.004;
   static #kTiltClamp = 0.98; // Prevent gimbal lock.
-  static #kPanSpeed = 0.02;
-  static #kZoomSpeed = 0.05;
+  static #kPanSpeed = 0.01;
+  static #kZoomSpeed = 0.01;
   static #kDefaultFOV = Math.PI / 4; // 45 degrees
   static #kNearClipFactor = 0.01;
   static #kFarClipFactor = 100.0;
