@@ -7,6 +7,7 @@ const { mat4, vec4 } = glMatrix;
 import PanoramaToCubemapConverter from './PanoramaToCubemapConverter.js';
 import MipmapGenerator, { MipKind } from './MipmapGenerator.js';
 import EnvironmentPreprocessor from './EnvironmentPreprocessor.js';
+import { AlphaMode } from './Model.js';
 
 // IBL texture size constants
 const kIrradianceMapSize = 64;
@@ -745,13 +746,16 @@ export default class Renderer {
       data[o++] = material.uniforms.emissiveFactor[0];
       data[o++] = material.uniforms.emissiveFactor[1];
       data[o++] = material.uniforms.emissiveFactor[2];
-      data[o++] = material.uniforms.alphaMode;
       data[o++] = material.uniforms.metallicFactor;
       data[o++] = material.uniforms.roughnessFactor;
       data[o++] = material.uniforms.normalScale;
       data[o++] = material.uniforms.occlusionStrength;
       data[o++] = material.uniforms.alphaCutoff;
       while (o < 16) data[o++] = 0.0;
+      
+      const view = new DataView(data.buffer);
+      view.setInt32(12 * 4, material.uniforms.alphaMode | 0, true);
+      
       this.#device.queue.writeBuffer(ub, 0, data.buffer);
       material.uniformBuffer = ub;
 
@@ -1143,11 +1147,10 @@ export default class Renderer {
     this.#opaqueMeshes = [];
     this.#transparentMeshes = [];
     const subMeshes = model.getSubMeshes();
-    const materials = model.getMaterials();
-    if (!subMeshes || !materials) return;
+    if (!subMeshes || !this.#materials || this.#materials.length === 0) return;
 
     for (const sm of subMeshes) {
-      const mat = materials[sm.materialIndex];
+      const mat = this.#materials[sm.materialIndex];
       const centroid = [
         (sm.minBounds[0] + sm.maxBounds[0]) * 0.5,
         (sm.minBounds[1] + sm.maxBounds[1]) * 0.5,
@@ -1159,7 +1162,7 @@ export default class Renderer {
         materialIndex: sm.materialIndex,
         centroid: centroid,
       };
-      if (mat && mat.alphaMode === 2) {
+      if (mat && mat.uniforms.alphaMode === AlphaMode.Blend) {
         this.#transparentMeshes.push(dst);
       } else {
         this.#opaqueMeshes.push(dst);
