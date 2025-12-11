@@ -3,14 +3,18 @@ import { FloatType } from 'three';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 
 export default class Environment {
+  // Private field declarations
+  #transform;
+  #texture;
+
   constructor() {
-    this.m_transform = mat4.create();
-    this.m_texture = {
-      m_name: "",
-      m_width: 0,
-      m_height: 0,
-      m_components: 0,
-      m_data: null // Float32Array for HDR data
+    this.#transform = mat4.create();
+    this.#texture = {
+      name: "",
+      width: 0,
+      height: 0,
+      components: 0,
+      data: null // Float32Array for HDR data
     };
   }
 
@@ -55,11 +59,11 @@ export default class Environment {
         }
       }
       
-      this.m_texture.m_name = filename;
-      this.m_texture.m_width = origWidth;
-      this.m_texture.m_height = origHeight;
-      this.m_texture.m_components = 4; // RGBA
-      this.m_texture.m_data = rgbaData;
+      this.#texture.name = filename;
+      this.#texture.width = origWidth;
+      this.#texture.height = origHeight;
+      this.#texture.components = 4; // RGBA
+      this.#texture.data = rgbaData;
       
       console.log(`Loaded environment texture (${origWidth}x${origHeight}) in ${(performance.now() - t0).toFixed(2)} ms`);
       
@@ -104,10 +108,10 @@ export default class Environment {
         
         // Process each channel (RGBA)
         for (let c = 0; c < 4; c++) {
-          const c00 = this.m_texture.m_data[(y0 * origWidth + x0) * 4 + c];
-          const c10 = this.m_texture.m_data[(y0 * origWidth + x1) * 4 + c];
-          const c01 = this.m_texture.m_data[(y1 * origWidth + x0) * 4 + c];
-          const c11 = this.m_texture.m_data[(y1 * origWidth + x1) * 4 + c];
+          const c00 = this.#texture.data[(y0 * origWidth + x0) * 4 + c];
+          const c10 = this.#texture.data[(y0 * origWidth + x1) * 4 + c];
+          const c01 = this.#texture.data[(y1 * origWidth + x0) * 4 + c];
+          const c11 = this.#texture.data[(y1 * origWidth + x1) * 4 + c];
           
           // Bilinear interpolation: horizontal then vertical
           const top = c00 + dx * (c10 - c00);
@@ -123,16 +127,16 @@ export default class Environment {
     console.log(`Downsampling took ${((endTime - startTime) / 1000).toFixed(3)} seconds.`);
     
     // Update the texture with downsampled data
-    this.m_texture.m_width = newWidth;
-    this.m_texture.m_height = newHeight;
-    this.m_texture.m_data = downsampled;
+    this.#texture.width = newWidth;
+    this.#texture.height = newHeight;
+    this.#texture.data = downsampled;
   }
 
-  getTexture() { return this.m_texture; }
-  getTransform() { return this.m_transform; }
+  getTexture() { return this.#texture; }
+  getTransform() { return this.#transform; }
   
   updateRotation(rotationAngle) {
-    mat4.identity(this.m_transform);
-    mat4.rotateY(this.m_transform, this.m_transform, rotationAngle);
+    mat4.identity(this.#transform);
+    mat4.rotateY(this.#transform, this.#transform, rotationAngle);
   }
 }

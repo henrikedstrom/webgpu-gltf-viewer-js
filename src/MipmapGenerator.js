@@ -21,31 +21,44 @@ export const MipKind = Object.freeze({
 });
 
 export default class MipmapGenerator {
+  // === WebGPU Core ===
+  #device;
+
+  // === Compute Pipelines ===
+  #pipeline2D;
+  #pipelineCube;
+  #pipelineNormal2D;
+
+  // === Bind Group Layouts ===
+  #bindGroupLayout2D;
+  #bindGroupLayoutCube;
+  #bindGroupLayoutFace;
+  #renderBindGroupLayout;
+
+  // === Uniform Buffers & Bind Groups ===
+  #uniformBuffers; // One per cubemap face (0..5)
+  #faceBindGroups; // One per cubemap face (0..5)
+
+  // === Render Pipeline (sRGB) ===
+  #renderPipelineSRGB2D;
+  #renderColorFormatSRGB;
+
+  // === Initialization State ===
+  #isInitialized;
+  #initializationPromise;
+
   /**
    * @brief Constructs a new mipmap generator using the provided WebGPU device.
    * @param {GPUDevice} device - The WebGPU device
    */
   constructor(device) {
-    this.device = device;
+    this.#device = device;
 
-    // Compute pipeline resources
-    this.bindGroupLayout2D = null;
-    this.bindGroupLayoutCube = null;
-    this.bindGroupLayoutFace = null;
-    this.pipeline2D = null;
-    this.pipelineCube = null;
-    this.pipelineNormal2D = null;
-    this.uniformBuffers = [];
-    this.faceBindGroups = [];
-
-    // Render pipeline resources (for sRGB)
-    this.renderBindGroupLayout = null;
-    this.renderPipelineSRGB2D = null;
-    this.renderColorFormatSRGB = 'rgba8unorm-srgb';
-
-    // Initialization state
-    this.isInitialized = false;
-    this.initializationPromise = null;
+    // Only initialize fields with non-null defaults
+    this.#uniformBuffers = [];
+    this.#faceBindGroups = [];
+    this.#renderColorFormatSRGB = 'rgba8unorm-srgb';
+    this.#isInitialized = false;
 
     // Initialize synchronous resources only
     this.#initUniformBuffers();
@@ -68,10 +81,10 @@ export default class MipmapGenerator {
 
     switch (kind) {
       case MipKind.LinearUNorm2D:
-        this.#generate2DCompute(texture, size, this.pipeline2D, this.bindGroupLayout2D);
+        this.#generate2DCompute(texture, size, this.#pipeline2D, this.#bindGroupLayout2D);
         break;
       case MipKind.Normal2D:
-        this.#generate2DCompute(texture, size, this.pipelineNormal2D, this.bindGroupLayout2D);
+        this.#generate2DCompute(texture, size, this.#pipelineNormal2D, this.#bindGroupLayout2D);
         break;
       case MipKind.Float16Cube:
         this.#generateCubeCompute(texture, size);
@@ -80,7 +93,7 @@ export default class MipmapGenerator {
         this.#generate2DRenderSRGB(texture, size);
         break;
       default:
-        this.#generate2DCompute(texture, size, this.pipeline2D, this.bindGroupLayout2D);
+        this.#generate2DCompute(texture, size, this.#pipeline2D, this.#bindGroupLayout2D);
         break;
     }
   }
@@ -90,18 +103,18 @@ export default class MipmapGenerator {
    * @private
    */
   async #ensureInitialized() {
-    if (this.isInitialized) {
+    if (this.#isInitialized) {
       return;
     }
 
-    if (this.initializationPromise) {
-      await this.initializationPromise;
+    if (this.#initializationPromise) {
+      await this.#initializationPromise;
       return;
     }
 
-    this.initializationPromise = this.#initPipelines();
-    await this.initializationPromise;
-    this.isInitialized = true;
+    this.#initializationPromise = this.#initPipelines();
+    await this.#initializationPromise;
+    this.#isInitialized = true;
   }
 
   /**
@@ -115,10 +128,10 @@ export default class MipmapGenerator {
     };
 
     for (let face = 0; face < 6; face++) {
-      const uniformBuffer = this.device.createBuffer(bufferDescriptor);
+      const uniformBuffer = this.#device.createBuffer(bufferDescriptor);
       const faceIndexData = new Uint32Array([face]);
-      this.device.queue.writeBuffer(uniformBuffer, 0, faceIndexData.buffer);
-      this.uniformBuffers.push(uniformBuffer);
+      this.#device.queue.writeBuffer(uniformBuffer, 0, faceIndexData.buffer);
+      this.#uniformBuffers.push(uniformBuffer);
     }
   }
 
@@ -151,7 +164,7 @@ export default class MipmapGenerator {
     outputTexture.storageTexture.viewDimension = '2d';
     outputTexture.storageTexture.format = 'rgba8unorm';
 
-    this.bindGroupLayout2D = this.device.createBindGroupLayout({
+    this.#bindGroupLayout2D = this.#device.createBindGroupLayout({
       entries: [
         { ...inputTexture },
         { ...outputTexture },
@@ -163,7 +176,7 @@ export default class MipmapGenerator {
     outputTexture.storageTexture.viewDimension = '2d-array';
     outputTexture.storageTexture.format = 'rgba16float';
 
-    this.bindGroupLayoutCube = this.device.createBindGroupLayout({
+    this.#bindGroupLayoutCube = this.#device.createBindGroupLayout({
       entries: [
         { ...inputTexture },
         { ...outputTexture },
@@ -171,7 +184,7 @@ export default class MipmapGenerator {
     });
 
     // Face index layout (only for cube maps)
-    this.bindGroupLayoutFace = this.device.createBindGroupLayout({
+    this.#bindGroupLayoutFace = this.#device.createBindGroupLayout({
       entries: [
         {
           binding: 0,
@@ -186,11 +199,11 @@ export default class MipmapGenerator {
 
     // Create bind groups for each face
     for (let face = 0; face < 6; face++) {
-      this.faceBindGroups.push(
-        this.device.createBindGroup({
-          layout: this.bindGroupLayoutFace,
+      this.#faceBindGroups.push(
+        this.#device.createBindGroup({
+          layout: this.#bindGroupLayoutFace,
           entries: [
-            { binding: 0, resource: { buffer: this.uniformBuffers[face] } },
+            { binding: 0, resource: { buffer: this.#uniformBuffers[face] } },
           ],
         })
       );
@@ -214,14 +227,14 @@ export default class MipmapGenerator {
    */
   async #initComputePipelines() {
     const [pipeline2D, pipelineCube, pipelineNormal2D] = await Promise.all([
-      this.#createComputePipeline('./shaders/mipmap_generator_2d.wgsl', [this.bindGroupLayout2D]),
-      this.#createComputePipeline('./shaders/mipmap_generator_cube.wgsl', [this.bindGroupLayoutCube, this.bindGroupLayoutFace]),
-      this.#createComputePipeline('./shaders/mipmap_generator_normal_2d.wgsl', [this.bindGroupLayout2D]),
+      this.#createComputePipeline('./shaders/mipmap_generator_2d.wgsl', [this.#bindGroupLayout2D]),
+      this.#createComputePipeline('./shaders/mipmap_generator_cube.wgsl', [this.#bindGroupLayoutCube, this.#bindGroupLayoutFace]),
+      this.#createComputePipeline('./shaders/mipmap_generator_normal_2d.wgsl', [this.#bindGroupLayout2D]),
     ]);
 
-    this.pipeline2D = pipeline2D;
-    this.pipelineCube = pipelineCube;
-    this.pipelineNormal2D = pipelineNormal2D;
+    this.#pipeline2D = pipeline2D;
+    this.#pipelineCube = pipelineCube;
+    this.#pipelineNormal2D = pipelineNormal2D;
   }
 
   /**
@@ -230,7 +243,7 @@ export default class MipmapGenerator {
    */
   async #initRenderPipeline() {
     // Bind group layout: texture only (using textureLoad, no sampler needed)
-    this.renderBindGroupLayout = this.device.createBindGroupLayout({
+    this.#renderBindGroupLayout = this.#device.createBindGroupLayout({
       entries: [
         {
           binding: 0,
@@ -245,9 +258,9 @@ export default class MipmapGenerator {
     });
 
     // Create render pipeline targeting sRGB RGBA8 color
-    this.renderPipelineSRGB2D = await this.#createRenderPipeline(
+    this.#renderPipelineSRGB2D = await this.#createRenderPipeline(
       './shaders/mipmap_downsample_render.wgsl',
-      this.renderColorFormatSRGB
+      this.#renderColorFormatSRGB
     );
   }
 
@@ -260,10 +273,10 @@ export default class MipmapGenerator {
    */
   async #createComputePipeline(shaderPath, bindGroupLayouts) {
     const shaderCode = await this.#loadShaderFile(shaderPath);
-    const shaderModule = this.device.createShaderModule({ code: shaderCode });
-    const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts });
+    const shaderModule = this.#device.createShaderModule({ code: shaderCode });
+    const pipelineLayout = this.#device.createPipelineLayout({ bindGroupLayouts });
 
-    return this.device.createComputePipeline({
+    return this.#device.createComputePipeline({
       layout: pipelineLayout,
       compute: {
         module: shaderModule,
@@ -281,13 +294,13 @@ export default class MipmapGenerator {
    */
   async #createRenderPipeline(shaderPath, colorFormat) {
     const shaderCode = await this.#loadShaderFile(shaderPath);
-    const shaderModule = this.device.createShaderModule({ code: shaderCode });
+    const shaderModule = this.#device.createShaderModule({ code: shaderCode });
 
-    const pipelineLayout = this.device.createPipelineLayout({
-      bindGroupLayouts: [this.renderBindGroupLayout],
+    const pipelineLayout = this.#device.createPipelineLayout({
+      bindGroupLayouts: [this.#renderBindGroupLayout],
     });
 
-    return this.device.createRenderPipeline({
+    return this.#device.createRenderPipeline({
       layout: pipelineLayout,
       vertex: {
         module: shaderModule,
@@ -343,7 +356,7 @@ export default class MipmapGenerator {
       mipLevelViews.push(texture.createView(viewDescriptor));
     }
 
-    const encoder = this.device.createCommandEncoder();
+    const encoder = this.#device.createCommandEncoder();
     const computePass = encoder.beginComputePass();
     computePass.setPipeline(pipeline);
 
@@ -351,7 +364,7 @@ export default class MipmapGenerator {
       const width = Math.max(1, size.width >> nextLevel);
       const height = Math.max(1, size.height >> nextLevel);
 
-      const bindGroup = this.device.createBindGroup({
+      const bindGroup = this.#device.createBindGroup({
         layout,
         entries: [
           { binding: 0, resource: mipLevelViews[nextLevel - 1] },
@@ -368,7 +381,7 @@ export default class MipmapGenerator {
 
     computePass.end();
     const commandBuffer = encoder.finish();
-    this.device.queue.submit([commandBuffer]);
+    this.#device.queue.submit([commandBuffer]);
   }
 
   /**
@@ -397,22 +410,22 @@ export default class MipmapGenerator {
     }
 
     // Command encoding
-    const encoder = this.device.createCommandEncoder();
+    const encoder = this.#device.createCommandEncoder();
     const computePass = encoder.beginComputePass();
-    computePass.setPipeline(this.pipelineCube);
+    computePass.setPipeline(this.#pipelineCube);
 
     // For each face and mip level
     for (let face = 0; face < 6; face++) {
       // Set per-face uniform (group 1)
-      computePass.setBindGroup(1, this.faceBindGroups[face]);
+      computePass.setBindGroup(1, this.#faceBindGroups[face]);
 
       for (let nextLevel = 1; nextLevel < mipLevelViews.length; nextLevel++) {
         const width = Math.max(1, size.width >> nextLevel);
         const height = Math.max(1, size.height >> nextLevel);
 
         // Bind prev/next level views (group 0)
-        const bindGroup = this.device.createBindGroup({
-          layout: this.bindGroupLayoutCube,
+        const bindGroup = this.#device.createBindGroup({
+          layout: this.#bindGroupLayoutCube,
           entries: [
             { binding: 0, resource: mipLevelViews[nextLevel - 1] },
             { binding: 1, resource: mipLevelViews[nextLevel] },
@@ -429,7 +442,7 @@ export default class MipmapGenerator {
 
     computePass.end();
     const commandBuffer = encoder.finish();
-    this.device.queue.submit([commandBuffer]);
+    this.#device.queue.submit([commandBuffer]);
   }
 
   /**
@@ -443,7 +456,7 @@ export default class MipmapGenerator {
     const mipLevelCount = 1 + Math.floor(Math.log2(Math.max(size.width, size.height)));
 
     // Create command encoder
-    const encoder = this.device.createCommandEncoder();
+    const encoder = this.#device.createCommandEncoder();
 
     // Iterate over mip levels
     for (let nextLevel = 1; nextLevel < mipLevelCount; nextLevel++) {
@@ -467,8 +480,8 @@ export default class MipmapGenerator {
       });
 
       // Create bind group for prev level (texture only, using textureLoad)
-      const bindGroup = this.device.createBindGroup({
-        layout: this.renderBindGroupLayout,
+      const bindGroup = this.#device.createBindGroup({
+        layout: this.#renderBindGroupLayout,
         entries: [
           { binding: 0, resource: prevView },
         ],
@@ -486,7 +499,7 @@ export default class MipmapGenerator {
         ],
       });
 
-      renderPass.setPipeline(this.renderPipelineSRGB2D);
+      renderPass.setPipeline(this.#renderPipelineSRGB2D);
       renderPass.setBindGroup(0, bindGroup);
       renderPass.draw(3, 1, 0, 0); // Fullscreen triangle
       renderPass.end();
@@ -494,6 +507,6 @@ export default class MipmapGenerator {
 
     // Submit
     const commandBuffer = encoder.finish();
-    this.device.queue.submit([commandBuffer]);
+    this.#device.queue.submit([commandBuffer]);
   }
 }

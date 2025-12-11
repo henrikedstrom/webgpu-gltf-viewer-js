@@ -4,28 +4,44 @@
  */
 
 export default class EnvironmentPreprocessor {
+  // === WebGPU Core ===
+  #device;
+
+  // === Compute Pipelines ===
+  #pipelineIrradiance;
+  #pipelinePrefilteredSpecular;
+  #pipelineBRDFIntegrationLUT;
+
+  // === Bind Groups & Layouts ===
+  #bindGroupLayouts; // [common parameters, per-face uniforms]
+  #perFaceBindGroups; // 6 bind groups for per-face parameters
+  #perMipBindGroups; // Per-mip bind groups (created on demand)
+
+  // === Uniform Buffers ===
+  #uniformBuffer;
+  #perMipUniformBuffers;
+  #perFaceUniformBuffers; // 6 buffers, one per cubemap face
+
+  // === Samplers ===
+  #environmentSampler;
+
+  // === Initialization State ===
+  #isInitialized;
+  #initializationPromise;
   
   /**
    * @brief Constructs a new environment preprocessor using the provided WebGPU device.
    * @param {GPUDevice} device - The WebGPU device
    */
   constructor(device) {
-    this.device = device;
+    this.#device = device;
 
-    // WebGPU resources
-    this.bindGroupLayouts = []; // [common parameters, per-face uniforms]
-    this.pipelineIrradiance = null;
-    this.pipelinePrefilteredSpecular = null;
-    this.pipelineBRDFIntegrationLUT = null;
-    this.uniformBuffer = null;
-    this.perMipUniformBuffers = [];
-    this.perFaceUniformBuffers = []; // 6 buffers, one per cubemap face
-    this.perFaceBindGroups = []; // 6 bind groups for per-face parameters
-    this.environmentSampler = null;
-    
-    // Initialization state
-    this.isInitialized = false;
-    this.initializationPromise = null;
+    // Only initialize fields with non-null defaults
+    this.#bindGroupLayouts = [];
+    this.#perMipUniformBuffers = [];
+    this.#perFaceUniformBuffers = [];
+    this.#perFaceBindGroups = [];
+    this.#isInitialized = false;
     
     // Initialize synchronous resources only (delay shader loading and pipeline creation)
     this.#initUniformBuffers();
@@ -71,15 +87,15 @@ export default class EnvironmentPreprocessor {
 
     // Bind group 0 (common for all passes)
     const bindGroup0Entries = [
-      { binding: 0, resource: this.environmentSampler },
+      { binding: 0, resource: this.#environmentSampler },
       { binding: 1, resource: environmentCubemap.createView(inputViewDesc) },
-      { binding: 2, resource: this.uniformBuffer },
+      { binding: 2, resource: this.#uniformBuffer },
       { binding: 3, resource: irradianceCubemap.createView(outputCubeViewDesc) },
       { binding: 4, resource: brdfIntegrationLUT.createView(output2DViewDesc) },
     ];
 
-    const bindGroup0 = this.device.createBindGroup({
-      layout: this.bindGroupLayouts[0], 
+    const bindGroup0 = this.#device.createBindGroup({
+      layout: this.#bindGroupLayouts[0], 
       entries: bindGroup0Entries,
     });
   
@@ -87,13 +103,13 @@ export default class EnvironmentPreprocessor {
     const perMipBindGroups = this.#createPerMipBindGroups(specularCubemap);
 
     // Create a command encoder and compute pass.
-    const encoder = this.device.createCommandEncoder();
+    const encoder = this.#device.createCommandEncoder();
     const computePass = encoder.beginComputePass();
 
     // ---- Pass 1: Generate Irradiance Map (Diffuse IBL) ----
 
     // Set the pipeline for irradiance cubemap generation.
-    computePass.setPipeline(this.pipelineIrradiance);
+    computePass.setPipeline(this.#pipelineIrradiance);
 
     // Set bind groups common to all faces.
     computePass.setBindGroup(0, bindGroup0);
@@ -103,7 +119,7 @@ export default class EnvironmentPreprocessor {
     const numFaces = 6;
     for (let face = 0; face < numFaces; face++) {
       // For each face, update the per-face uniform (bind group 1).
-      computePass.setBindGroup(1, this.perFaceBindGroups[face]);
+      computePass.setBindGroup(1, this.#perFaceBindGroups[face]);
 
       const workgroupSize = 8;
       const workgroupCountX = Math.ceil(irradianceCubemap.width / workgroupSize);
@@ -116,12 +132,12 @@ export default class EnvironmentPreprocessor {
     const mipLevelCount = specularCubemap.mipLevelCount;
 
     // Set the pipeline for prefiltered specular cubemap generation.
-    computePass.setPipeline(this.pipelinePrefilteredSpecular);
+    computePass.setPipeline(this.#pipelinePrefilteredSpecular);
 
     // Dispatch a compute shader for each mip level of each face of the cubemap.
     for (let face = 0; face < numFaces; face++) {
       // Bind per-face uniform (bind group 1).
-      computePass.setBindGroup(1, this.perFaceBindGroups[face]);
+      computePass.setBindGroup(1, this.#perFaceBindGroups[face]);
       
       for (let mipLevel = 0; mipLevel < mipLevelCount; mipLevel++) {
         // Bind per-mip uniforms (bind group 2).
@@ -140,7 +156,7 @@ export default class EnvironmentPreprocessor {
     // ---- Pass 3: Generate BRDF Integration LUT ----
 
     // Set the pipeline for BRDF integration LUT generation.
-    computePass.setPipeline(this.pipelineBRDFIntegrationLUT);
+    computePass.setPipeline(this.#pipelineBRDFIntegrationLUT);
 
     // Dispatch a compute shader for the output texture.
     const width = brdfIntegrationLUT.width;
@@ -153,7 +169,7 @@ export default class EnvironmentPreprocessor {
     // Finish the compute pass and submit the command buffer.
     computePass.end();
     const commandBuffer = encoder.finish();
-    this.device.queue.submit([commandBuffer]);
+    this.#device.queue.submit([commandBuffer]);
   }
 
 
@@ -162,20 +178,20 @@ export default class EnvironmentPreprocessor {
    * @private
    */
   async #ensureInitialized() {
-    if (this.isInitialized) {
+    if (this.#isInitialized) {
       return; // Already initialized
     }
     
-    if (this.initializationPromise) {
+    if (this.#initializationPromise) {
       // Initialization in progress, wait for it
-      await this.initializationPromise;
+      await this.#initializationPromise;
       return;
     }
 
     // Start initialization
-    this.initializationPromise = this.#initComputePipelines();
-    await this.initializationPromise;
-    this.isInitialized = true;
+    this.#initializationPromise = this.#initComputePipelines();
+    await this.#initializationPromise;
+    this.#isInitialized = true;
   }
   
   /**
@@ -187,14 +203,14 @@ export default class EnvironmentPreprocessor {
       size: 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     };
-    this.uniformBuffer = this.device.createBuffer(bufferDescriptor);
-    this.device.queue.writeBuffer(this.uniformBuffer, 0, new Uint32Array([1024]));
+    this.#uniformBuffer = this.#device.createBuffer(bufferDescriptor);
+    this.#device.queue.writeBuffer(this.#uniformBuffer, 0, new Uint32Array([1024]));
 
     // Update descriptor for per-face uniform buffers
     bufferDescriptor.size = 4; // Face id
     for (let face = 0; face < 6; face++) {
-      this.perFaceUniformBuffers[face] = this.device.createBuffer(bufferDescriptor);
-      this.device.queue.writeBuffer(this.perFaceUniformBuffers[face], 0, new Uint32Array([face]));
+      this.#perFaceUniformBuffers[face] = this.#device.createBuffer(bufferDescriptor);
+      this.#device.queue.writeBuffer(this.#perFaceUniformBuffers[face], 0, new Uint32Array([face]));
     }
   }
 
@@ -203,7 +219,7 @@ export default class EnvironmentPreprocessor {
    * @private
    */
   #initSampler() {
-    this.environmentSampler = this.device.createSampler({
+    this.#environmentSampler = this.#device.createSampler({
       addressModeU: 'repeat',
       addressModeV: 'repeat',
       addressModeW: 'repeat',
@@ -257,7 +273,7 @@ export default class EnvironmentPreprocessor {
 
     const group0Entries = [samplerEntry, cubemapEntry, numSamplesEntry, irradianceEntry, brdfLutEntry];
     const group0LayoutDesc = { entries: group0Entries };
-    this.bindGroupLayouts[0] = this.device.createBindGroupLayout(group0LayoutDesc);
+    this.#bindGroupLayouts[0] = this.#device.createBindGroupLayout(group0LayoutDesc);
 
     const faceIndexEntry = {
       binding: 0,
@@ -266,7 +282,7 @@ export default class EnvironmentPreprocessor {
     };
     const group1Entries = [faceIndexEntry];
     const group1LayoutDesc = { entries: group1Entries };
-    this.bindGroupLayouts[1] = this.device.createBindGroupLayout(group1LayoutDesc);
+    this.#bindGroupLayouts[1] = this.#device.createBindGroupLayout(group1LayoutDesc);
 
     const roughnessParamsEntry = {
       binding: 0,
@@ -282,7 +298,7 @@ export default class EnvironmentPreprocessor {
 
     const group2Entries = [roughnessParamsEntry, prefilteredSpecularEntry];
     const group2LayoutDesc = { entries: group2Entries };
-    this.bindGroupLayouts[2] = this.device.createBindGroupLayout(group2LayoutDesc);
+    this.#bindGroupLayouts[2] = this.#device.createBindGroupLayout(group2LayoutDesc);
   }
 
   /**
@@ -296,15 +312,15 @@ export default class EnvironmentPreprocessor {
 
       const bindGroupEntries = [{
         binding: 0,
-        resource: { buffer: this.perFaceUniformBuffers[face] },
+        resource: { buffer: this.#perFaceUniformBuffers[face] },
       }];
 
       const bindGroupDescriptor = {
-        layout: this.bindGroupLayouts[1],
+        layout: this.#bindGroupLayouts[1],
         entries: bindGroupEntries,
       };
 
-      this.perFaceBindGroups[face] = this.device.createBindGroup(bindGroupDescriptor);
+      this.#perFaceBindGroups[face] = this.#device.createBindGroup(bindGroupDescriptor);
     }
   }
 
@@ -314,10 +330,10 @@ export default class EnvironmentPreprocessor {
    */
   async #initComputePipelines() {
     const shaderCode = await this.#loadShaderFile("./shaders/environment_prefilter.wgsl");
-    const shaderModule = this.device.createShaderModule({ code: shaderCode });
+    const shaderModule = this.#device.createShaderModule({ code: shaderCode });
 
-    const pipelineBindGroups = [this.bindGroupLayouts[0], this.bindGroupLayouts[1], this.bindGroupLayouts[2]];
-    const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts: pipelineBindGroups });
+    const pipelineBindGroups = [this.#bindGroupLayouts[0], this.#bindGroupLayouts[1], this.#bindGroupLayouts[2]];
+    const pipelineLayout = this.#device.createPipelineLayout({ bindGroupLayouts: pipelineBindGroups });
 
     const computeIrradianceDescriptor = {
       layout: pipelineLayout,
@@ -326,7 +342,7 @@ export default class EnvironmentPreprocessor {
         entryPoint: "computeIrradiance",
       },
     };
-    this.pipelineIrradiance = this.device.createComputePipeline(computeIrradianceDescriptor);
+    this.#pipelineIrradiance = this.#device.createComputePipeline(computeIrradianceDescriptor);
 
     const computePrefilteredSpecularDescriptor = {
       layout: pipelineLayout,
@@ -335,7 +351,7 @@ export default class EnvironmentPreprocessor {
         entryPoint: "computePrefilteredSpecular",
       },
     };
-    this.pipelinePrefilteredSpecular = this.device.createComputePipeline(computePrefilteredSpecularDescriptor);
+    this.#pipelinePrefilteredSpecular = this.#device.createComputePipeline(computePrefilteredSpecularDescriptor);
 
     const computeBRDFIntegrationLUTDescriptor = {
       layout: pipelineLayout,
@@ -344,7 +360,7 @@ export default class EnvironmentPreprocessor {
         entryPoint: "computeLUT",
       },
     };
-    this.pipelineBRDFIntegrationLUT = this.device.createComputePipeline(computeBRDFIntegrationLUTDescriptor);
+    this.#pipelineBRDFIntegrationLUT = this.#device.createComputePipeline(computeBRDFIntegrationLUTDescriptor);
   }
 
 
@@ -356,8 +372,8 @@ export default class EnvironmentPreprocessor {
    */
   #createPerMipBindGroups(specularCubemap) {
     const mipLevelCount = specularCubemap.mipLevelCount;
-    this.perMipUniformBuffers = new Array(mipLevelCount);
-    this.perMipBindGroups = new Array(mipLevelCount);
+    this.#perMipUniformBuffers = new Array(mipLevelCount);
+    this.#perMipBindGroups = new Array(mipLevelCount);
 
     // Create a buffer for the roughness parameter
     const bufferDescriptor = {
@@ -365,9 +381,9 @@ export default class EnvironmentPreprocessor {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     };
     for (let mipLevel = 0; mipLevel < mipLevelCount; mipLevel++) {
-      this.perMipUniformBuffers[mipLevel] = this.device.createBuffer(bufferDescriptor);
+      this.#perMipUniformBuffers[mipLevel] = this.#device.createBuffer(bufferDescriptor);
       const roughness = mipLevel / (mipLevelCount - 1);
-      this.device.queue.writeBuffer(this.perMipUniformBuffers[mipLevel], 0, new Float32Array([roughness])); 
+      this.#device.queue.writeBuffer(this.#perMipUniformBuffers[mipLevel], 0, new Float32Array([roughness])); 
     }
 
     // Create a texture view descriptor for the output cubemap
@@ -382,29 +398,29 @@ export default class EnvironmentPreprocessor {
 
     // Create bind group descriptor
     const bindGroup2Entries = [
-      { binding: 0, resource: this.perMipUniformBuffers[0] },
+      { binding: 0, resource: this.#perMipUniformBuffers[0] },
       { binding: 1, resource: specularCubemap.createView(outputCubeViewDesc) },
     ];
     const bindGroup2Descriptor = {
-      layout: this.bindGroupLayouts[2],
+      layout: this.#bindGroupLayouts[2],
       entries: bindGroup2Entries,
     };
-    this.perMipBindGroups[0] = this.device.createBindGroup(bindGroup2Descriptor);
+    this.#perMipBindGroups[0] = this.#device.createBindGroup(bindGroup2Descriptor);
 
     // Create bind groups for each mip level
     for (let mipLevel = 1; mipLevel < mipLevelCount; mipLevel++) {
       outputCubeViewDesc.baseMipLevel = mipLevel;
       const bindGroupEntries = [
-        { binding: 0, resource: this.perMipUniformBuffers[mipLevel] },
+        { binding: 0, resource: this.#perMipUniformBuffers[mipLevel] },
         { binding: 1, resource: specularCubemap.createView(outputCubeViewDesc) },
       ];
       const bindGroupDescriptor = {
-        layout: this.bindGroupLayouts[2],
+        layout: this.#bindGroupLayouts[2],
         entries: bindGroupEntries,
       };
-      this.perMipBindGroups[mipLevel] = this.device.createBindGroup(bindGroupDescriptor);
+      this.#perMipBindGroups[mipLevel] = this.#device.createBindGroup(bindGroupDescriptor);
     }
-    return this.perMipBindGroups;
+    return this.#perMipBindGroups;
   }
 
 

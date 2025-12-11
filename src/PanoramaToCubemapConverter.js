@@ -4,23 +4,38 @@
  */
 
 export default class PanoramaToCubemapConverter {
+  // === WebGPU Core ===
+  #device;
+
+  // === Compute Pipeline ===
+  #computePipeline;
+
+  // === Bind Groups & Layouts ===
+  #bindGroupLayouts; // [common parameters, per-face uniforms]
+  #perFaceBindGroups; // 6 bind groups for per-face parameters
+
+  // === Uniform Buffers ===
+  #perFaceUniformBuffers; // 6 buffers, one per cubemap face
+
+  // === Samplers ===
+  #sampler;
+
+  // === Initialization State ===
+  #isInitialized;
+  #initializationPromise;
+
   /**
    * @brief Constructs a new converter using the provided WebGPU device.
    * @param {GPUDevice} device - The WebGPU device
    */
   constructor(device) {
-    this.device = device;
+    this.#device = device;
     
-    // WebGPU resources
-    this.bindGroupLayouts = []; // [common parameters, per-face uniforms]
-    this.computePipeline = null;
-    this.perFaceUniformBuffers = []; // 6 buffers, one per cubemap face
-    this.perFaceBindGroups = []; // 6 bind groups for per-face parameters
-    this.sampler = null;
-    
-    // Initialization state
-    this.isInitialized = false;
-    this.initializationPromise = null;
+    // Only initialize fields with non-null defaults
+    this.#bindGroupLayouts = [];
+    this.#perFaceUniformBuffers = [];
+    this.#perFaceBindGroups = [];
+    this.#isInitialized = false;
     
     // Initialize synchronous resources only
     this.#initUniformBuffers();
@@ -38,9 +53,9 @@ export default class PanoramaToCubemapConverter {
     // Ensure async initialization is complete
     await this.#ensureInitialized();
     
-    const width = panoramaTextureInfo.m_width;
-    const height = panoramaTextureInfo.m_height;
-    const data = panoramaTextureInfo.m_data; // Float32Array
+    const width = panoramaTextureInfo.width;
+    const height = panoramaTextureInfo.height;
+    const data = panoramaTextureInfo.data; // Float32Array
 
     // Validate data buffer size
     const expectedSize = width * height * 4; // 4 components (RGBA)
@@ -60,7 +75,7 @@ export default class PanoramaToCubemapConverter {
       format: 'rgba32float',
       mipLevelCount: 1,
     };
-    const panoramaTexture = this.device.createTexture(textureDescriptor);
+    const panoramaTexture = this.#device.createTexture(textureDescriptor);
     
     // Upload the texture data
     // Use the typed array directly or create a new buffer if it's a view
@@ -68,7 +83,7 @@ export default class PanoramaToCubemapConverter {
       ? data.buffer 
       : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
       
-    this.device.queue.writeTexture(
+    this.#device.queue.writeTexture(
       { texture: panoramaTexture },
       dataBuffer,
       { bytesPerRow: 4 * width * 4 }, // 4 components * 4 bytes per float
@@ -90,21 +105,21 @@ export default class PanoramaToCubemapConverter {
     };
 
     // Create bind group 0 (common for all faces)
-    const bindGroup0 = this.device.createBindGroup({
-      layout: this.bindGroupLayouts[0],
+    const bindGroup0 = this.#device.createBindGroup({
+      layout: this.#bindGroupLayouts[0],
       entries: [
-        { binding: 0, resource: this.sampler },
+        { binding: 0, resource: this.#sampler },
         { binding: 1, resource: panoramaTexture.createView(inputViewDesc) },
         { binding: 2, resource: environmentCubemap.createView(outputCubeViewDesc) },
       ],
     });
 
     // Create command encoder and compute pass
-    const encoder = this.device.createCommandEncoder();
+    const encoder = this.#device.createCommandEncoder();
     const computePass = encoder.beginComputePass();
 
     // Set the compute pipeline
-    computePass.setPipeline(this.computePipeline);
+    computePass.setPipeline(this.#computePipeline);
 
     // Set bind group common to all faces
     computePass.setBindGroup(0, bindGroup0);
@@ -117,7 +132,7 @@ export default class PanoramaToCubemapConverter {
 
     for (let face = 0; face < 6; face++) {
       // Set per-face bind group
-      computePass.setBindGroup(1, this.perFaceBindGroups[face]);
+      computePass.setBindGroup(1, this.#perFaceBindGroups[face]);
       
       // Dispatch workgroups
       computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY, 1);
@@ -126,7 +141,7 @@ export default class PanoramaToCubemapConverter {
     // Finish and submit
     computePass.end();
     const commandBuffer = encoder.finish();
-    this.device.queue.submit([commandBuffer]);
+    this.#device.queue.submit([commandBuffer]);
   }
 
   /**
@@ -134,20 +149,20 @@ export default class PanoramaToCubemapConverter {
    * @private
    */
   async #ensureInitialized() {
-    if (this.isInitialized) {
+    if (this.#isInitialized) {
       return; // Already initialized
     }
     
-    if (this.initializationPromise) {
+    if (this.#initializationPromise) {
       // Initialization in progress, wait for it
-      await this.initializationPromise;
+      await this.#initializationPromise;
       return;
     }
     
     // Start initialization
-    this.initializationPromise = this.#initComputePipeline();
-    await this.initializationPromise;
-    this.isInitialized = true;
+    this.#initializationPromise = this.#initComputePipeline();
+    await this.#initializationPromise;
+    this.#isInitialized = true;
   }
 
   /**
@@ -162,9 +177,9 @@ export default class PanoramaToCubemapConverter {
     
     // Each buffer contains the face index (u32)
     for (let face = 0; face < 6; face++) {
-      this.perFaceUniformBuffers[face] = this.device.createBuffer(bufferDescriptor);
+      this.#perFaceUniformBuffers[face] = this.#device.createBuffer(bufferDescriptor);
       const faceIndexData = new Uint32Array([face]);
-      this.device.queue.writeBuffer(this.perFaceUniformBuffers[face], 0, faceIndexData.buffer);
+      this.#device.queue.writeBuffer(this.#perFaceUniformBuffers[face], 0, faceIndexData.buffer);
     }
   }
 
@@ -173,7 +188,7 @@ export default class PanoramaToCubemapConverter {
    * @private
    */
   #initSampler() {
-    this.sampler = this.device.createSampler({
+    this.#sampler = this.#device.createSampler({
       addressModeU: 'repeat',
       addressModeV: 'clamp-to-edge',
       addressModeW: 'repeat',
@@ -223,7 +238,7 @@ export default class PanoramaToCubemapConverter {
     const group0LayoutDesc = {
       entries: group0Entries,
     };
-    this.bindGroupLayouts[0] = this.device.createBindGroupLayout(group0LayoutDesc);
+    this.#bindGroupLayouts[0] = this.#device.createBindGroupLayout(group0LayoutDesc);
 
     
     // Bind group layout 1 (per-face parameters):
@@ -241,7 +256,7 @@ export default class PanoramaToCubemapConverter {
     const group1LayoutDesc = {
       entries: group1Entries
     };
-    this.bindGroupLayouts[1] = this.device.createBindGroupLayout(group1LayoutDesc); 
+    this.#bindGroupLayouts[1] = this.#device.createBindGroupLayout(group1LayoutDesc); 
   }
 
   /**
@@ -254,13 +269,13 @@ export default class PanoramaToCubemapConverter {
     for (let face = 0; face < 6; face++) {
       const bindGroupEntries = [{
         binding: 0,
-        resource: { buffer: this.perFaceUniformBuffers[face] },
+        resource: { buffer: this.#perFaceUniformBuffers[face] },
       }];
       const bindGroupDescriptor = {
-        layout: this.bindGroupLayouts[1],
+        layout: this.#bindGroupLayouts[1],
         entries: bindGroupEntries,
       };
-      this.perFaceBindGroups[face] = this.device.createBindGroup(bindGroupDescriptor);
+      this.#perFaceBindGroups[face] = this.#device.createBindGroup(bindGroupDescriptor);
     }
   }
 
@@ -270,10 +285,10 @@ export default class PanoramaToCubemapConverter {
    */
   async #initComputePipeline() {
     const shaderCode = await this.#loadShaderFile("./shaders/panorama_to_cubemap.wgsl");
-    const shaderModule = this.device.createShaderModule({ code: shaderCode });
+    const shaderModule = this.#device.createShaderModule({ code: shaderCode });
     
-    const pipelineBindGroups = [this.bindGroupLayouts[0], this.bindGroupLayouts[1]];
-    const pipelineLayout = this.device.createPipelineLayout({ bindGroupLayouts: pipelineBindGroups });
+    const pipelineBindGroups = [this.#bindGroupLayouts[0], this.#bindGroupLayouts[1]];
+    const pipelineLayout = this.#device.createPipelineLayout({ bindGroupLayouts: pipelineBindGroups });
     
     const descriptor = {
       layout: pipelineLayout,
@@ -283,7 +298,7 @@ export default class PanoramaToCubemapConverter {
       },
     };
     
-    this.computePipeline = this.device.createComputePipeline(descriptor);
+    this.#computePipeline = this.#device.createComputePipeline(descriptor);
   }
 
   /**

@@ -9,24 +9,39 @@ export const AlphaMode = {
 };
 
 export default class Model {
+  // === Transformation ===
+  #transform;
+  #rotationAngle;
+
+  // === Bounds ===
+  #minBounds;
+  #maxBounds;
+
+  // === Geometry Data ===
+  #vertices;
+  #indices;
+  #materials;
+  #textures;
+  #subMeshes;
+
+  // === Material Tracking ===
+  #materialIndexMap; // Internal map for material tracking
+
+  // === Loading State ===
+  #isLoaded;
+
   constructor() {
-    // Transformation properties
-    this.m_transform = mat4.create();
-    this.m_rotationAngle = 0.0;
-
-    // Bounds
-    this.m_minBounds = vec3.create();
-    this.m_maxBounds = vec3.create();
-
-    // Geometry data
-    this.m_vertices = []; // Array of vertex objects
-    this.m_indices = [];
-    this.m_materials = [];
-    this.m_textures = [];
-    this.m_subMeshes = [];
-
-    // Loading state
-    this.m_isLoaded = false;
+    // Initialize fields with non-null defaults
+    this.#transform = mat4.create();
+    this.#rotationAngle = 0.0;
+    this.#minBounds = vec3.create();
+    this.#maxBounds = vec3.create();
+    this.#vertices = [];
+    this.#indices = [];
+    this.#materials = [];
+    this.#textures = [];
+    this.#subMeshes = [];
+    this.#isLoaded = false;
   }
 
   // Load a glTF model from URL
@@ -40,7 +55,7 @@ export default class Model {
           const t1 = performance.now();
           this.#processGLTF(gltf);
           const t2 = performance.now();
-          this.m_isLoaded = true;
+          this.#isLoaded = true;
           console.log(`Loaded model in ${(performance.now() - t0).toFixed(2)} ms (processing took: ${(t2 - t1).toFixed(2)} ms)`);
           resolve();
         },
@@ -55,42 +70,42 @@ export default class Model {
   // Update the model (for animation, rotation, etc.)
   update(deltaTime, animate = false) {
     if (animate) {
-      this.m_rotationAngle += deltaTime * 0.001; // Slow rotation
-      if (this.m_rotationAngle > 2 * Math.PI) {
-        this.m_rotationAngle -= 2 * Math.PI;
+      this.#rotationAngle += deltaTime * 0.001; // Slow rotation
+      if (this.#rotationAngle > 2 * Math.PI) {
+        this.#rotationAngle -= 2 * Math.PI;
       }
     }
 
     // Update transformation matrix
-    mat4.identity(this.m_transform);
-    mat4.rotateY(this.m_transform, this.m_transform, -this.m_rotationAngle);
+    mat4.identity(this.#transform);
+    mat4.rotateY(this.#transform, this.#transform, -this.#rotationAngle);
   }
 
   // Reset model orientation
   resetOrientation() {
-    this.m_rotationAngle = 0.0;
+    this.#rotationAngle = 0.0;
     this.update(0, false);
   }
 
   // Accessors
   getTransform() {
-    return this.m_transform;
+    return this.#transform;
   }
 
   getBounds() {
     return {
-      min: this.m_minBounds,
-      max: this.m_maxBounds,
+      min: this.#minBounds,
+      max: this.#maxBounds,
     };
   }
 
   getVertices() {
     // Convert vertex objects to Float32Array for WebGPU (full vertex struct)
-    const floatCount = this.m_vertices.length * 18; // 18 floats per vertex
+    const floatCount = this.#vertices.length * 18; // 18 floats per vertex
     const vertexData = new Float32Array(floatCount);
 
-    for (let i = 0; i < this.m_vertices.length; i++) {
-      const vertex = this.m_vertices[i];
+    for (let i = 0; i < this.#vertices.length; i++) {
+      const vertex = this.#vertices[i];
       const baseOffset = i * 18;
 
       // Position (3 floats): offset 0-2
@@ -128,30 +143,30 @@ export default class Model {
   }
 
   getIndices() {
-    return this.m_indices;
+    return this.#indices;
   }
 
   getMaterials() {
-    return this.m_materials;
+    return this.#materials;
   }
 
   getTextures() {
-    return this.m_textures;
+    return this.#textures;
   }
 
   getTexture(index) {
-    if (index >= 0 && index < this.m_textures.length) {
-      return this.m_textures[index];
+    if (index >= 0 && index < this.#textures.length) {
+      return this.#textures[index];
     }
     return null;
   }
 
   getSubMeshes() {
-    return this.m_subMeshes;
+    return this.#subMeshes;
   }
 
   isLoaded() {
-    return this.m_isLoaded;
+    return this.#isLoaded;
   }
 
   // Private method to process the loaded glTF data
@@ -255,11 +270,11 @@ export default class Model {
     const colors = attributes.color ? attributes.color.array : null;
 
     const vertexCount = positions.length / 3;
-    const vertexOffset = this.m_vertices.length;
+    const vertexOffset = this.#vertices.length;
 
     // Create submesh
     const subMesh = {
-      firstIndex: this.m_indices.length,
+      firstIndex: this.#indices.length,
       indexCount: 0,
       materialIndex: 0, // Will be updated when materials are processed
       _threeMaterial: meshObject.material || null,
@@ -359,33 +374,33 @@ export default class Model {
             ]
           : [1, 1, 1, 1],
       };
-      this.m_vertices.push(vertex);
+      this.#vertices.push(vertex);
     }
 
     // Process indices
     if (indices) {
       for (let i = 0; i < indices.length; i++) {
-        this.m_indices.push(vertexOffset + indices[i]);
+        this.#indices.push(vertexOffset + indices[i]);
       }
       subMesh.indexCount = indices.length;
     } else {
       // Non-indexed mesh: generate sequential indices
       for (let i = 0; i < vertexCount; i++) {
-        this.m_indices.push(vertexOffset + i);
+        this.#indices.push(vertexOffset + i);
       }
       subMesh.indexCount = vertexCount;
     }
 
-    this.m_subMeshes.push(subMesh);
+    this.#subMeshes.push(subMesh);
   }
 
   // Process materials from glTF
   #processMaterials(gltf) {
-    this.m_materials = [];
-    this._materialIndexMap = new Map();
+    this.#materials = [];
+    this.#materialIndexMap = new Map();
 
     // Extract materials from Three.js scene
-    const materialMap = this._materialIndexMap; // Track unique materials
+    const materialMap = this.#materialIndexMap; // Track unique materials
 
     gltf.scene.traverse((object) => {
       if (object.isMesh && object.material) {
@@ -449,19 +464,19 @@ export default class Model {
           occlusionTexture: -1,
         };
 
-        this.m_materials.push(material);
-        materialMap.set(threeMaterial, this.m_materials.length - 1);
+        this.#materials.push(material);
+        materialMap.set(threeMaterial, this.#materials.length - 1);
       }
     });
 
     // If no materials found, create a default one
-    if (this.m_materials.length === 0) {
+    if (this.#materials.length === 0) {
       console.log("No materials found in model, using default");
-      this.m_materials.push(this.#createDefaultMaterial());
+      this.#materials.push(this.#createDefaultMaterial());
     }
 
     // Assign material indices to submeshes now that materials are collected
-    for (const sm of this.m_subMeshes) {
+    for (const sm of this.#subMeshes) {
       if (sm._threeMaterial && materialMap.has(sm._threeMaterial)) {
         sm.materialIndex = materialMap.get(sm._threeMaterial);
       } else {
@@ -473,9 +488,9 @@ export default class Model {
 
   // Process textures from glTF
   #processTextures(gltf) {
-    this.m_textures = [];
+    this.#textures = [];
     const textureMap = new Map(); // Track unique textures
-    const materialIndexMap = this._materialIndexMap || new Map();
+    const materialIndexMap = this.#materialIndexMap || new Map();
 
     // Process each material to extract all texture types
     gltf.scene.traverse((object) => {
@@ -515,14 +530,14 @@ export default class Model {
                 image: threeTexture.image,
                 threeTexture: threeTexture,
               };
-              this.m_textures.push(texture);
-              textureMap.set(threeTexture, this.m_textures.length - 1);
+              this.#textures.push(texture);
+              textureMap.set(threeTexture, this.#textures.length - 1);
             }
 
             // Assign texture index to the corresponding material struct
             if (modelMaterialIndex !== undefined) {
               const texIndex = textureMap.get(threeTexture);
-              const modelMaterial = this.m_materials[modelMaterialIndex];
+              const modelMaterial = this.#materials[modelMaterialIndex];
               if (modelMaterial) {
                 switch (type) {
                   case "baseColor":
@@ -585,19 +600,19 @@ export default class Model {
 
   // Recompute bounds from vertex data
   #recomputeBounds() {
-    vec3.set(this.m_minBounds, Infinity, Infinity, Infinity);
-    vec3.set(this.m_maxBounds, -Infinity, -Infinity, -Infinity);
+    vec3.set(this.#minBounds, Infinity, Infinity, Infinity);
+    vec3.set(this.#maxBounds, -Infinity, -Infinity, -Infinity);
 
     // Calculate bounds from transformed vertices
-    for (const vertex of this.m_vertices) {
+    for (const vertex of this.#vertices) {
       const pos = vertex.position;
 
-      if (pos[0] < this.m_minBounds[0]) this.m_minBounds[0] = pos[0];
-      if (pos[0] > this.m_maxBounds[0]) this.m_maxBounds[0] = pos[0];
-      if (pos[1] < this.m_minBounds[1]) this.m_minBounds[1] = pos[1];
-      if (pos[1] > this.m_maxBounds[1]) this.m_maxBounds[1] = pos[1];
-      if (pos[2] < this.m_minBounds[2]) this.m_minBounds[2] = pos[2];
-      if (pos[2] > this.m_maxBounds[2]) this.m_maxBounds[2] = pos[2];
+      if (pos[0] < this.#minBounds[0]) this.#minBounds[0] = pos[0];
+      if (pos[0] > this.#maxBounds[0]) this.#maxBounds[0] = pos[0];
+      if (pos[1] < this.#minBounds[1]) this.#minBounds[1] = pos[1];
+      if (pos[1] > this.#maxBounds[1]) this.#maxBounds[1] = pos[1];
+      if (pos[2] < this.#minBounds[2]) this.#minBounds[2] = pos[2];
+      if (pos[2] > this.#maxBounds[2]) this.#maxBounds[2] = pos[2];
     }
   }
 
@@ -647,15 +662,15 @@ export default class Model {
 
   // Private method to clear all data
   #clearData() {
-    mat4.identity(this.m_transform);
-    this.m_rotationAngle = 0.0;
-    vec3.set(this.m_minBounds, Infinity, Infinity, Infinity);
-    vec3.set(this.m_maxBounds, -Infinity, -Infinity, -Infinity);
-    this.m_vertices = [];
-    this.m_indices = [];
-    this.m_materials = [];
-    this.m_textures = [];
-    this.m_subMeshes = [];
-    this.m_isLoaded = false;
+    mat4.identity(this.#transform);
+    this.#rotationAngle = 0.0;
+    vec3.set(this.#minBounds, Infinity, Infinity, Infinity);
+    vec3.set(this.#maxBounds, -Infinity, -Infinity, -Infinity);
+    this.#vertices = [];
+    this.#indices = [];
+    this.#materials = [];
+    this.#textures = [];
+    this.#subMeshes = [];
+    this.#isLoaded = false;
   }
 }

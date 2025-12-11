@@ -10,99 +10,114 @@ export default class Camera {
   static #kNearClipFactor = 0.01;
   static #kFarClipFactor = 100.0;
 
+  // Private field declarations
+  #width;
+  #height;
+  #near;
+  #far;
+  #position;
+  #target;
+  #forward;
+  #right;
+  #up;
+  #baseUp;
+  #panFactor;
+  #zoomFactor;
+  #tmpMat4; // Preallocated temporary matrix
+
   constructor(width = 800, height = 600) {
-    this.m_width = width;
-    this.m_height = height;
+    this.#width = width;
+    this.#height = height;
 
-    this.m_near = 0.1;
-    this.m_far = 100.0;
+    this.#near = 0.1;
+    this.#far = 100.0;
 
-    this.m_position = vec3.fromValues(0.0, 0.0, -3.0);
-    this.m_target = vec3.fromValues(0.0, 0.0, 0.0);
+    this.#position = vec3.fromValues(0.0, 0.0, -3.0);
+    this.#target = vec3.fromValues(0.0, 0.0, 0.0);
 
-    this.m_forward = vec3.fromValues(0.0, 0.0, 1.0);
-    this.m_right = vec3.fromValues(1.0, 0.0, 0.0);
-    this.m_up = vec3.fromValues(0.0, 1.0, 0.0);
-    this.m_baseUp = vec3.fromValues(0.0, 1.0, 0.0);
+    this.#forward = vec3.fromValues(0.0, 0.0, 1.0);
+    this.#right = vec3.fromValues(1.0, 0.0, 0.0);
+    this.#up = vec3.fromValues(0.0, 1.0, 0.0);
+    this.#baseUp = vec3.fromValues(0.0, 1.0, 0.0);
 
     // Dynamic movement factors (scaled by model size)
-    this.m_panFactor = Camera.#kPanSpeed;
-    this.m_zoomFactor = Camera.#kZoomSpeed;
+    this.#panFactor = Camera.#kPanSpeed;
+    this.#zoomFactor = Camera.#kZoomSpeed;
 
-    this.tmpMat4 = mat4.create(); // Preallocated temporary matrix
+    this.#tmpMat4 = mat4.create(); // Preallocated temporary matrix
   }
 
   // Resize the viewport
   resizeViewport(width, height) {
     if (width > 0 && height > 0) {
-      this.m_width = width;
-      this.m_height = height;
+      this.#width = width;
+      this.#height = height;
     }
   }
 
   // Tumble the camera (rotate around target)
   tumble(dx, dy) {
-    const originalPosition = vec3.clone(this.m_position);
-    const originalForward = vec3.clone(this.m_forward);
+    const originalPosition = vec3.clone(this.#position);
+    const originalForward = vec3.clone(this.#forward);
 
     // Step 1: Rotate around the world Y-axis (up-axis)
     const tmp = vec3.create();
-    vec3.sub(tmp, this.m_position, this.m_target); // tmp = m_position - m_target
+    vec3.sub(tmp, this.#position, this.#target); // tmp = position - target
 
     const degreesX = dx * Camera.#kTumbleSpeed; // Horizontal rotation
-    mat4.rotateY(this.tmpMat4, mat4.create(), degreesX);
-    vec3.transformMat4(tmp, tmp, this.tmpMat4);
+    mat4.rotateY(this.#tmpMat4, mat4.create(), degreesX);
+    vec3.transformMat4(tmp, tmp, this.#tmpMat4);
 
-    vec3.add(this.m_position, this.m_target, tmp); // Update m_position
+    vec3.add(this.#position, this.#target, tmp); // Update position
     this.#updateBasisVectors();
 
     // Step 2: Rotate around the camera's local X-axis (right-axis)
     const degreesY = dy * Camera.#kTumbleSpeed; // Vertical rotation
-    const upRotationAxis = vec3.clone(this.m_right);
-    mat4.rotate(this.tmpMat4, mat4.create(), degreesY, upRotationAxis);
-    vec3.transformMat4(tmp, tmp, this.tmpMat4);
+    const upRotationAxis = vec3.clone(this.#right);
+    mat4.rotate(this.#tmpMat4, mat4.create(), degreesY, upRotationAxis);
+    vec3.transformMat4(tmp, tmp, this.#tmpMat4);
 
-    vec3.add(this.m_position, this.m_target, tmp); // Update m_position
+    vec3.add(this.#position, this.#target, tmp); // Update position
     this.#updateBasisVectors();
 
     // Step 3: Clamp forward vector to prevent flipping
-    if (Math.abs(this.m_forward[1]) > Camera.#kTiltClamp) {
-      vec3.copy(this.m_position, originalPosition);
-      vec3.copy(this.m_forward, originalForward);
+    if (Math.abs(this.#forward[1]) > Camera.#kTiltClamp) {
+      vec3.copy(this.#position, originalPosition);
+      vec3.copy(this.#forward, originalForward);
     }
   }
 
   // Zoom the camera (move along forward vector)
   zoom(dx, dy) {
-    const delta = (-dx + dy) * this.m_zoomFactor;
+    const delta = (-dx + dy) * this.#zoomFactor;
 
     const forwardDelta = vec3.create();
-    vec3.scale(forwardDelta, this.m_forward, delta);
+    vec3.scale(forwardDelta, this.#forward, delta);
 
     const newPosition = vec3.create();
-    vec3.add(newPosition, this.m_position, forwardDelta);
+    vec3.add(newPosition, this.#position, forwardDelta);
 
-    const distanceToTarget = vec3.distance(newPosition, this.m_target);
-    if (distanceToTarget > this.m_near && distanceToTarget < this.m_far) {
-      vec3.copy(this.m_position, newPosition);
+    const distanceToTarget = vec3.distance(newPosition, this.#target);
+    if (distanceToTarget > this.#near && distanceToTarget < this.#far) {
+      vec3.copy(this.#position, newPosition);
     }
   }
 
   // Pan the camera (move along right and up vectors)
   pan(dx, dy) {
-    const deltaX = -dx * this.m_panFactor;
-    const deltaY = dy * this.m_panFactor;
+    const deltaX = -dx * this.#panFactor;
+    const deltaY = dy * this.#panFactor;
 
     const rightDelta = vec3.create();
-    vec3.scale(rightDelta, this.m_right, deltaX);
+    vec3.scale(rightDelta, this.#right, deltaX);
 
     const upDelta = vec3.create();
-    vec3.scale(upDelta, this.m_up, deltaY);
+    vec3.scale(upDelta, this.#up, deltaY);
 
-    vec3.add(this.m_position, this.m_position, rightDelta);
-    vec3.add(this.m_position, this.m_position, upDelta);
-    vec3.add(this.m_target, this.m_target, rightDelta);
-    vec3.add(this.m_target, this.m_target, upDelta);
+    vec3.add(this.#position, this.#position, rightDelta);
+    vec3.add(this.#position, this.#position, upDelta);
+    vec3.add(this.#target, this.#target, rightDelta);
+    vec3.add(this.#target, this.#target, upDelta);
   }
 
   // Reset camera to frame a model given its AABB
@@ -138,18 +153,18 @@ export default class Camera {
     const distance = safeRadius / (sinHalf > 1e-6 ? sinHalf : 0.70710678); // fallback denom ~sin(45/2)
 
     // Position the camera at +Z looking toward -Z
-    vec3.set(this.m_position, center[0], center[1], center[2] + distance);
-    vec3.copy(this.m_target, center);
+    vec3.set(this.#position, center[0], center[1], center[2] + distance);
+    vec3.copy(this.#target, center);
 
     // Near / far planes
-    this.m_near = safeRadius * Camera.#kNearClipFactor;
-    this.m_far = distance + safeRadius * Camera.#kFarClipFactor;
-    if (this.m_near < 1e-4) this.m_near = 1e-4;
-    if (this.m_far <= this.m_near + 1.0) this.m_far = this.m_near + 1.0;
+    this.#near = safeRadius * Camera.#kNearClipFactor;
+    this.#far = distance + safeRadius * Camera.#kFarClipFactor;
+    if (this.#near < 1e-4) this.#near = 1e-4;
+    if (this.#far <= this.#near + 1.0) this.#far = this.#near + 1.0;
 
     // Movement factors scaled by model size
-    this.m_panFactor = safeRadius * Camera.#kPanSpeed;
-    this.m_zoomFactor = safeRadius * Camera.#kZoomSpeed;
+    this.#panFactor = safeRadius * Camera.#kPanSpeed;
+    this.#zoomFactor = safeRadius * Camera.#kZoomSpeed;
 
     // Recompute basis
     this.#updateBasisVectors();
@@ -158,38 +173,38 @@ export default class Camera {
   // Get the view matrix
   getViewMatrix() {
     const viewMatrix = mat4.create();
-    mat4.lookAt(viewMatrix, this.m_position, this.m_target, this.m_up);
+    mat4.lookAt(viewMatrix, this.#position, this.#target, this.#up);
     return viewMatrix;
   }
 
   // Get the projection matrix
   getProjectionMatrix() {
-    const ratio = this.m_width / this.m_height;
+    const ratio = this.#width / this.#height;
     const projectionMatrix = mat4.create();
     mat4.perspective(
       projectionMatrix,
       Camera.#kDefaultFOV,
       ratio,
-      this.m_near,
-      this.m_far
+      this.#near,
+      this.#far
     );
     return projectionMatrix;
   }
 
   // Get the world position of the camera
   getWorldPosition() {
-    return this.m_position;
+    return this.#position;
   }
 
   // Private: Update basis vectors
   #updateBasisVectors() {
-    vec3.sub(this.m_forward, this.m_target, this.m_position);
-    vec3.normalize(this.m_forward, this.m_forward);
+    vec3.sub(this.#forward, this.#target, this.#position);
+    vec3.normalize(this.#forward, this.#forward);
 
-    vec3.cross(this.m_right, this.m_forward, this.m_baseUp);
-    vec3.normalize(this.m_right, this.m_right);
+    vec3.cross(this.#right, this.#forward, this.#baseUp);
+    vec3.normalize(this.#right, this.#right);
 
-    vec3.cross(this.m_up, this.m_right, this.m_forward);
-    vec3.normalize(this.m_up, this.m_up);
+    vec3.cross(this.#up, this.#right, this.#forward);
+    vec3.normalize(this.#up, this.#up);
   }
 }
